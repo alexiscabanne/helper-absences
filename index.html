@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Suivi Congés 2026</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="header">
+  <h1>Suivi des Congés</h1>
+  <span class="year">2026</span>
+</div>
+
+<div class="controls">
+  <div class="field">
+    <label>Personnes</label>
+    <div class="multi-select" id="person-multiselect">
+      <div class="multi-select-display" id="person-display">Toute l'équipe ▾</div>
+      <div class="multi-select-dropdown" id="person-dropdown" style="display:none"></div>
+    </div>
+  </div>
+  <div class="field">
+    <label>Date de début</label>
+    <input type="date" id="date-start" value="2026-03-16" min="2026-03-16" max="2026-12-31">
+  </div>
+  <div class="field">
+    <label>Date de fin</label>
+    <input type="date" id="date-end" value="2026-12-31" min="2026-03-16" max="2026-12-31">
+  </div>
+  <div class="quick-btns">
+    <button class="quick-btn" id="devs-btn">Les devs</button>
+    <button class="quick-btn" data-range="month">Ce mois</button>
+    <button class="quick-btn" data-range="q2">T2 (Avr–Juin)</button>
+    <button class="quick-btn" data-range="q3">T3 (Juil–Sep)</button>
+    <button class="quick-btn" data-range="q4">T4 (Oct–Déc)</button>
+    <button class="quick-btn" data-range="year">Année complète</button>
+  </div>
+</div>
+
+<dialog id="add-member-dialog" class="add-member-dialog">
+  <h3>Ajouter une personne</h3>
+  <div class="dialog-body">
+    <input type="text" id="new-name" placeholder="Prénom Nom">
+    <select id="new-role">
+      <option value="">— Rôle —</option>
+    </select>
+    <span id="add-member-error" style="color:var(--absent);font-size:13px"></span>
+  </div>
+  <div class="dialog-actions">
+    <button id="add-member-btn" class="dialog-btn primary">Ajouter</button>
+    <button id="add-member-cancel" class="dialog-btn">Annuler</button>
+  </div>
+</dialog>
+
+<dialog id="role-mgmt-dialog" class="add-member-dialog">
+  <h3>Gérer les rôles</h3>
+  <div class="dialog-body">
+    <div id="role-list"></div>
+    <div class="role-add-row">
+      <input type="color" id="new-role-color" value="#6c8cff" title="Couleur du rôle">
+      <input type="text" id="new-role-name" placeholder="Nouveau rôle">
+      <button class="dialog-btn primary" id="add-role-btn">+</button>
+    </div>
+    <span id="role-error" style="color:var(--absent);font-size:13px"></span>
+  </div>
+  <div class="dialog-actions">
+    <button class="dialog-btn" id="role-mgmt-close">Fermer</button>
+  </div>
+</dialog>
+
+<div id="save-indicator" class="save-indicator">Sauvegardé ✓</div>
+
+<div id="team-overview" class="team-overview" style="display:none">
+  <h2 id="team-overview-toggle">
+    Vue d'ensemble de l'équipe<span class="collapse-arrow">▾</span>
+  </h2>
+  <div id="team-overview-body">
+    <table class="team-table">
+      <thead><tr><th>Personne</th><th>Jours présent</th><th>Demi-journées</th><th>Jours absent</th><th>Total ouvrés</th><th>Taux</th><th>Statut</th></tr></thead>
+      <tbody id="team-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="results" class="results"></div>
+
+<script>
+const MONTHS_FR = ['','Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+const DAYS_FR = ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
+const TODAY = new Date().toISOString().slice(0, 10);
+
+// Jours fériés français 2026
+const HOLIDAYS = new Map([
+  ['2026-04-06', 'Lundi de Pâques'],
+  ['2026-05-01', 'Fête du Travail'],
+  ['2026-05-08', 'Victoire 1945'],
+  ['2026-05-14', 'Ascension'],
+  ['2026-05-25', 'Lundi de Pentecôte'],
+  ['2026-07-14', 'Fête Nationale'],
+  ['2026-08-15', 'Assomption'],
+  ['2026-11-01', 'Toussaint'],
+  ['2026-11-11', 'Armistice'],
+  ['2026-12-25', 'Noël'],
+]);
+
+let DATA = null;
+let PROVISIONAL = {};
+let MEMBERS = [];
+
+const dateStart = document.getElementById('date-start');
+const dateEnd = document.getElementById('date-end');
+const resultsDiv = document.getElementById('results');
+const teamOverview = document.getElementById('team-overview');
+const teamTbody = document.getElementById('team-tbody');
+const saveIndicator = document.getElementById('save-indicator');
+
+let ROLES = [null];
+let ROLES_DATA = [];
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function populateRoleSelect() {
+  const sel = document.getElementById('new-role');
+  while (sel.options.length > 1) sel.remove(1);
+  ROLES_DATA.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r.name;
+    opt.textContent = r.name;
+    sel.appendChild(opt);
+  });
+}
+
+// ── Storage helpers ──
+async function loadData() {
+  const [dataRes, membersRes, rolesRes] = await Promise.all([fetch('/api/data'), fetch('/api/members'), fetch('/api/roles')]);
+  const result = await dataRes.json();
+  DATA = result.data;
+  PROVISIONAL = result.provisional;
+  MEMBERS = await membersRes.json();
+  ROLES_DATA = await rolesRes.json();
+  ROLES = [null, ...ROLES_DATA.map(r => r.name)];
+  populateRoleSelect();
+}
+
+async function loadRoles() {
+  const res = await fetch('/api/roles');
+  ROLES_DATA = await res.json();
+  ROLES = [null, ...ROLES_DATA.map(r => r.name)];
+}
+
+function flashSave() {
+  saveIndicator.classList.add('show');
+  setTimeout(() => saveIndicator.classList.remove('show'), 1400);
+}
+
+// ── Toggle provisional ──
+async function toggleProvisional(event, name, dateKey) {
+  event.preventDefault();
+  if (!DATA[name] || DATA[name][dateKey] === undefined) return;
+  if (DATA[name][dateKey] === 1) return;
+  const res = await fetch('/api/toggle-provisional', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person: name, date: dateKey })
+  });
+  const { provisional } = await res.json();
+  if (!PROVISIONAL[name]) PROVISIONAL[name] = {};
+  if (provisional) PROVISIONAL[name][dateKey] = 1;
+  else delete PROVISIONAL[name][dateKey];
+  flashSave();
+  update();
+}
+
+// ── Toggle a day ──
+async function toggleDay(name, dateKey) {
+  if (!DATA[name] || DATA[name][dateKey] === undefined) return;
+  const res = await fetch('/api/toggle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person: name, date: dateKey })
+  });
+  const { present } = await res.json();
+  DATA[name][dateKey] = present;
+  if (PROVISIONAL[name]) delete PROVISIONAL[name][dateKey];
+  flashSave();
+  update();
+}
+
+// ── Multi-select helpers ──
+function updateSelectDisplay() {
+  const display = document.getElementById('person-display');
+  const allChk = document.getElementById('chk-all');
+  if (!display || !allChk) return;
+  if (allChk.checked) { display.textContent = 'Toute l\'équipe ▾'; return; }
+  const checked = [...document.querySelectorAll('.person-chk:checked')].map(c => c.dataset.person);
+  if (checked.length === 0) display.textContent = 'Aucune sélection ▾';
+  else if (checked.length === 1) display.textContent = checked[0] + ' ▾';
+  else display.textContent = `${checked.length} personnes ▾`;
+}
+
+function getSelectedPersons() {
+  const allChk = document.getElementById('chk-all');
+  if (!allChk || allChk.checked) return MEMBERS.map(m => m.person).filter(n => DATA[n]);
+  const checked = [...document.querySelectorAll('.person-chk:checked')].map(c => c.dataset.person);
+  return checked.length === 0
+    ? MEMBERS.map(m => m.person).filter(n => DATA[n])
+    : checked.filter(n => DATA[n]);
+}
+
+// ── Populate person dropdown ──
+function populateSelect() {
+  const dropdown = document.getElementById('person-dropdown');
+  const prevSelected = new Set([...document.querySelectorAll('.person-chk:checked')].map(c => c.dataset.person));
+  const hadSelection = prevSelected.size > 0;
+  dropdown.innerHTML = '';
+
+  const allItem = document.createElement('label');
+  allItem.className = 'multi-select-item';
+  allItem.innerHTML = `<input type="checkbox" id="chk-all" ${!hadSelection ? 'checked' : ''}> Toute l'équipe`;
+  dropdown.appendChild(allItem);
+
+  MEMBERS.forEach(({ person }) => {
+    const item = document.createElement('label');
+    item.className = 'multi-select-item';
+    const isChecked = !hadSelection || prevSelected.has(person);
+    item.innerHTML = `<input type="checkbox" class="person-chk" data-person="${person}" ${isChecked ? 'checked' : ''}> <span class="person-label">${person}</span>`;
+    const delBtn = document.createElement('span');
+    delBtn.className = 'person-delete-btn';
+    delBtn.textContent = '×';
+    delBtn.title = `Supprimer ${person}`;
+    delBtn.addEventListener('click', async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!confirm(`Supprimer ${person} et toutes ses données ?`)) return;
+      await fetch('/api/members/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ person })
+      });
+      await loadData();
+      populateSelect();
+      update();
+    });
+    item.appendChild(delBtn);
+    dropdown.appendChild(item);
+  });
+
+  const sep = document.createElement('div');
+  sep.className = 'multi-select-sep';
+  dropdown.appendChild(sep);
+  const rolesItem = document.createElement('div');
+  rolesItem.className = 'multi-select-item add-person-item';
+  rolesItem.textContent = '⚙ Rôles';
+  rolesItem.addEventListener('click', () => {
+    document.getElementById('person-dropdown').style.display = 'none';
+    openRoleMgmtDialog();
+  });
+  dropdown.appendChild(rolesItem);
+  const addItem = document.createElement('div');
+  addItem.className = 'multi-select-item add-person-item';
+  addItem.textContent = '+ Personne';
+  addItem.addEventListener('click', () => {
+    document.getElementById('person-dropdown').style.display = 'none';
+    document.getElementById('add-member-dialog').showModal();
+  });
+  dropdown.appendChild(addItem);
+
+  document.getElementById('chk-all').addEventListener('change', e => {
+    document.querySelectorAll('.person-chk').forEach(chk => { chk.checked = e.target.checked; });
+    updateSelectDisplay();
+    update();
+  });
+  document.querySelectorAll('.person-chk').forEach(chk => {
+    chk.addEventListener('change', () => {
+      const allChks = [...document.querySelectorAll('.person-chk')];
+      document.getElementById('chk-all').checked = allChks.every(c => c.checked);
+      updateSelectDisplay();
+      update();
+    });
+  });
+  updateSelectDisplay();
+}
+
+// ── Cycle role on click ──
+async function cycleRole(name) {
+  const m = MEMBERS.find(m => m.person === name);
+  if (!m) return;
+  const newRole = ROLES[(ROLES.indexOf(m.role) + 1) % ROLES.length];
+  await fetch('/api/members/role', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person: name, role: newRole })
+  });
+  m.role = newRole;
+  update();
+}
+
+function getLevel(pct) {
+  if (pct >= 70) return 'high';
+  if (pct >= 40) return 'mid';
+  return 'low';
+}
+
+function fmt(n) { return n % 1 === 0 ? String(n) : n.toFixed(1); }
+
+function calcStats(personData, start, end) {
+  let present = 0, absent = 0, half = 0;
+  const days = [];
+  const [sy, sm, sd] = start.split('-').map(Number);
+  const [ey, em, ed] = end.split('-').map(Number);
+  const d = new Date(Date.UTC(sy, sm - 1, sd));
+  const endD = new Date(Date.UTC(ey, em - 1, ed));
+  while (d <= endD) {
+    const key = d.toISOString().slice(0, 10);
+    const dow = d.getUTCDay();
+    const isWeekend = (dow === 0 || dow === 6);
+    const val = personData[key];
+    if (!isWeekend && val !== undefined) {
+      if (val === 1) present += 1;
+      else if (val === 0.5) { present += 0.5; absent += 0.5; half += 1; }
+      else absent += 1;
+    }
+    days.push({ date: key, dow, isWeekend, val: isWeekend ? null : val });
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  const total = present + absent;
+  const pct = total > 0 ? Math.round((present / total) * 100) : 0;
+  return { present, absent, half, total, pct, days };
+}
+
+function renderCard(name, stats, role) {
+  const level = getLevel(stats.pct);
+  const months = {};
+  stats.days.forEach(d => {
+    const m = parseInt(d.date.slice(5, 7));
+    if (!months[m]) months[m] = [];
+    months[m].push(d);
+  });
+
+  let calendarHTML = '';
+  for (const [m, days] of Object.entries(months)) {
+    calendarHTML += `<div class="month-grid"><div class="month-label">${MONTHS_FR[parseInt(m)]}</div><div class="days-row">`;
+    days.forEach(d => {
+      const dayNum = parseInt(d.date.slice(8, 10));
+      const dayName = DAYS_FR[d.dow];
+      let cls = 'day-cell ';
+      const isClickable = !d.isWeekend && d.val !== undefined && d.val !== null;
+      const holidayName = HOLIDAYS.get(d.date);
+      const isProv = !!(PROVISIONAL[name] && PROVISIONAL[name][d.date]);
+      if (d.isWeekend) cls += d.dow === 6 ? 'saturday' : 'sunday';
+      else if (holidayName) cls += 'holiday';
+      else if (d.val === 1) cls += 'present';
+      else if (d.val === 0.5) cls += 'half';
+      else if (d.val === 0) cls += 'absent';
+      else cls += 'sunday';
+      if (isProv) cls += ' provisional';
+      if (d.date === TODAY) cls += ' today';
+      const clickAttr = isClickable && !holidayName ? `onclick="toggleDay('${name}','${d.date}')" oncontextmenu="toggleProvisional(event,'${name}','${d.date}')"` : '';
+      const baseStatus = d.isWeekend ? 'Weekend' : holidayName ? holidayName : d.val === 1 ? 'Présent' : d.val === 0.5 ? 'Demi-journée' : d.val === 0 ? 'Absent' : '—';
+      const statusText = isProv ? `${baseStatus} (Provisoire)` : baseStatus;
+      const clickHint = isClickable && !holidayName ? ' · Cliquer pour changer' : '';
+      const label = isProv ? 'P' : dayNum;
+      calendarHTML += `<div class="${cls}" ${clickAttr}><span class="tooltip">${dayName} ${dayNum} – ${statusText}${clickHint}</span>${label}</div>`;
+    });
+    calendarHTML += '</div></div>';
+  }
+
+  const roleData = role ? ROLES_DATA.find(r => r.name === role) : null;
+  const roleBadgeHtml = roleData
+    ? `<span class="role-badge" style="background:${hexToRgba(roleData.color, 0.15)};color:${roleData.color}" onclick="cycleRole('${name}')" title="Cliquer pour changer le rôle">${role}</span>`
+    : role
+      ? `<span class="role-badge" onclick="cycleRole('${name}')" title="Cliquer pour changer le rôle">${role}</span>`
+      : `<span class="role-badge none" onclick="cycleRole('${name}')" title="Cliquer pour assigner un rôle">+ rôle</span>`;
+
+  return `
+    <div class="card" draggable="true" data-person="${name}">
+      <div class="card-header">
+        <span class="drag-handle" title="Glisser pour réordonner">⠿</span>
+        <span class="card-name" ondblclick="startEditName(this, '${name}')" title="Double-cliquer pour renommer">${name}</span>
+        ${roleBadgeHtml}
+        <span class="card-pct ${level}">${stats.pct}%</span>
+      </div>
+      <div class="card-stats">
+        <div class="stat"><div class="stat-val" style="color:var(--present)">${fmt(stats.present)}</div><div class="stat-label">Présent</div></div>
+        <div class="stat"><div class="stat-val" style="color:#f0b946">${fmt(stats.half)}</div><div class="stat-label">Demi-j.</div></div>
+        <div class="stat"><div class="stat-val" style="color:var(--absent)">${fmt(stats.absent)}</div><div class="stat-label">Absent</div></div>
+        <div class="stat"><div class="stat-val">${stats.total}</div><div class="stat-label">Jours ouvrés</div></div>
+      </div>
+      <div class="bar-container"><div class="bar-fill ${level}" style="width:${stats.pct}%"></div></div>
+      <div class="calendar-section">
+        <h3>Détail jour par jour · <span style="font-weight:400;color:var(--text-dim);font-size:12px">clic : Présent → Absent → Demi-journée · clic droit : Provisoire</span></h3>
+        ${calendarHTML}
+      </div>
+    </div>
+  `;
+}
+
+// ── Inline person rename ──
+function startEditName(span, oldName) {
+  if (span.querySelector('input')) return;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'card-name-input';
+  input.value = oldName;
+  span.textContent = '';
+  span.appendChild(input);
+  input.focus();
+  input.select();
+  let committed = false;
+  function commit() {
+    if (committed) return;
+    committed = true;
+    const newName = input.value.trim();
+    span.textContent = oldName;
+    saveName(oldName, newName);
+  }
+  function cancel() {
+    if (committed) return;
+    committed = true;
+    span.textContent = oldName;
+  }
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+  input.addEventListener('blur', commit);
+}
+
+async function saveName(oldName, newName) {
+  if (!newName || newName === oldName) return;
+  if (MEMBERS.find(m => m.person === newName)) { alert(`"${newName}" est déjà dans l'équipe.`); return; }
+  const res = await fetch('/api/members/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ oldName, newName })
+  });
+  if (res.status === 409) { alert(`"${newName}" existe déjà.`); return; }
+  if (!res.ok) { alert('Erreur lors du renommage.'); return; }
+  if (DATA[oldName] !== undefined) { DATA[newName] = DATA[oldName]; delete DATA[oldName]; }
+  if (PROVISIONAL[oldName] !== undefined) { PROVISIONAL[newName] = PROVISIONAL[oldName]; delete PROVISIONAL[oldName]; }
+  const m = MEMBERS.find(m => m.person === oldName);
+  if (m) m.person = newName;
+  flashSave();
+  populateSelect();
+  update();
+}
+
+// ── Role management ──
+function openRoleMgmtDialog() {
+  populateRoleMgmtDialog();
+  document.getElementById('role-mgmt-dialog').showModal();
+}
+
+function populateRoleMgmtDialog() {
+  const listEl = document.getElementById('role-list');
+  listEl.innerHTML = '';
+  ROLES_DATA.forEach(role => {
+    const row = document.createElement('div');
+    row.className = 'role-list-item';
+
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.className = 'role-color-swatch';
+    colorInput.value = role.color;
+    colorInput.title = 'Changer la couleur';
+    colorInput.addEventListener('change', async () => {
+      await fetch('/api/roles/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: role.name, color: colorInput.value }) });
+      await loadRoles();
+      populateRoleSelect();
+      populateRoleMgmtDialog();
+      update();
+    });
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'role-name-text';
+    nameSpan.textContent = role.name;
+    nameSpan.title = 'Double-cliquer pour renommer';
+    nameSpan.addEventListener('dblclick', () => startEditRoleName(nameSpan, role.name));
+
+    const deleteBtn = document.createElement('span');
+    deleteBtn.className = 'role-delete-btn';
+    deleteBtn.textContent = '×';
+    deleteBtn.title = 'Supprimer ce rôle';
+    deleteBtn.addEventListener('click', async () => {
+      const affected = MEMBERS.filter(m => m.role === role.name).length;
+      const msg = affected > 0
+        ? `Supprimer le rôle "${role.name}" ?\nIl est assigné à ${affected} personne(s) qui sera/seront mises sans rôle.`
+        : `Supprimer le rôle "${role.name}" ?`;
+      if (!confirm(msg)) return;
+      const res = await fetch('/api/roles/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: role.name }) });
+      if (!res.ok) { alert('Erreur lors de la suppression.'); return; }
+      MEMBERS.forEach(m => { if (m.role === role.name) m.role = null; });
+      await loadRoles();
+      populateRoleSelect();
+      populateRoleMgmtDialog();
+      update();
+    });
+
+    row.appendChild(colorInput);
+    row.appendChild(nameSpan);
+    row.appendChild(deleteBtn);
+    listEl.appendChild(row);
+  });
+}
+
+function startEditRoleName(span, oldName) {
+  if (span.querySelector('input')) return;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'role-name-input';
+  input.value = oldName;
+  span.textContent = '';
+  span.appendChild(input);
+  input.focus();
+  input.select();
+  let committed = false;
+  async function commit() {
+    if (committed) return;
+    committed = true;
+    const newName = input.value.trim().toUpperCase();
+    span.textContent = oldName;
+    if (!newName || newName === oldName) return;
+    const res = await fetch('/api/roles/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oldName, newName }) });
+    if (res.status === 409) { alert(`Le rôle "${newName}" existe déjà.`); return; }
+    if (!res.ok) { alert('Erreur lors du renommage.'); return; }
+    MEMBERS.forEach(m => { if (m.role === oldName) m.role = newName; });
+    await loadRoles();
+    populateRoleSelect();
+    populateRoleMgmtDialog();
+    update();
+  }
+  function cancel() {
+    if (committed) return;
+    committed = true;
+    span.textContent = oldName;
+  }
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+  input.addEventListener('blur', commit);
+}
+
+function update() {
+  if (!DATA) return;
+  const start = dateStart.value;
+  const end = dateEnd.value;
+
+  if (!start || !end || start > end) {
+    resultsDiv.innerHTML = '<div class="empty-state"><div class="icon">📅</div><p>Sélectionne une période valide pour voir les résultats.</p></div>';
+    teamOverview.style.display = 'none';
+    return;
+  }
+
+  const persons = getSelectedPersons();
+
+  if (persons.length > 1) {
+    teamOverview.style.display = '';
+    teamTbody.innerHTML = '';
+    let totPresent = 0, totHalf = 0, totAbsent = 0, totTotal = 0;
+    persons.forEach(name => {
+      const s = calcStats(DATA[name], start, end);
+      totPresent += s.present; totHalf += s.half; totAbsent += s.absent; totTotal += s.total;
+      const level = getLevel(s.pct);
+      const mi = MEMBERS.find(m => m.person === name);
+      const miRoleData = mi?.role ? ROLES_DATA.find(r => r.name === mi.role) : null;
+      const roleBadge = miRoleData
+        ? `<span class="role-badge" style="background:${hexToRgba(miRoleData.color, 0.15)};color:${miRoleData.color}">${mi.role}</span>`
+        : mi?.role ? `<span class="role-badge">${mi.role}</span>` : '';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${name} ${roleBadge}</td><td style="color:var(--present)">${fmt(s.present)}</td><td style="color:#f0b946">${s.half}</td><td style="color:var(--absent)">${fmt(s.absent)}</td><td>${s.total}</td><td><span class="card-pct ${level}" style="font-size:16px">${s.pct}%</span></td><td><span class="badge ${s.pct >= 50 ? 'present' : 'absent'}">${s.pct >= 50 ? 'Disponible' : 'Peu dispo.'}</span></td>`;
+      teamTbody.appendChild(tr);
+    });
+    const trTotal = document.createElement('tr');
+    trTotal.className = 'total-row';
+    trTotal.innerHTML = `<td>Total</td><td style="color:var(--present)">${fmt(totPresent)}</td><td style="color:#f0b946">${totHalf}</td><td style="color:var(--absent)">${fmt(totAbsent)}</td><td>${totTotal}</td><td></td><td></td>`;
+    teamTbody.appendChild(trTotal);
+  } else {
+    teamOverview.style.display = 'none';
+  }
+
+  resultsDiv.innerHTML = persons.map(name => {
+    const stats = calcStats(DATA[name], start, end);
+    const mi = MEMBERS.find(m => m.person === name);
+    return renderCard(name, stats, mi?.role);
+  }).join('');
+
+  attachDragListeners();
+}
+
+// ── Drag & drop reorder ──
+function attachDragListeners() {
+  const cards = resultsDiv.querySelectorAll('.card[draggable]');
+  let dragSrc = null;
+  cards.forEach(card => {
+    card.addEventListener('dragstart', e => {
+      dragSrc = card;
+      setTimeout(() => card.classList.add('dragging'), 0);
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      resultsDiv.querySelectorAll('.card').forEach(c => c.classList.remove('drag-over'));
+    });
+    card.addEventListener('dragover', e => {
+      e.preventDefault();
+      resultsDiv.querySelectorAll('.card').forEach(c => c.classList.remove('drag-over'));
+      if (card !== dragSrc) card.classList.add('drag-over');
+    });
+    card.addEventListener('drop', async e => {
+      e.preventDefault();
+      if (!dragSrc || dragSrc === card) return;
+      const allCards = [...resultsDiv.querySelectorAll('.card[draggable]')];
+      const srcIdx = allCards.indexOf(dragSrc);
+      const tgtIdx = allCards.indexOf(card);
+      const newOrder = MEMBERS.map(m => m.person);
+      const [moved] = newOrder.splice(srcIdx, 1);
+      newOrder.splice(tgtIdx, 0, moved);
+      await fetch('/api/members/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: newOrder })
+      });
+      newOrder.forEach((name, i) => {
+        const m = MEMBERS.find(m => m.person === name);
+        if (m) m.sort_order = i;
+      });
+      MEMBERS.sort((a, b) => a.sort_order - b.sort_order);
+      update();
+    });
+  });
+}
+
+// ── Team overview collapse ──
+document.getElementById('team-overview-toggle').addEventListener('click', () => {
+  teamOverview.classList.toggle('collapsed');
+});
+
+// ── Add member ──
+document.getElementById('add-member-btn').addEventListener('click', async () => {
+  const name = document.getElementById('new-name').value.trim();
+  const role = document.getElementById('new-role').value || null;
+  const errEl = document.getElementById('add-member-error');
+  errEl.textContent = '';
+  if (!name) { errEl.textContent = 'Nom requis.'; return; }
+  if (MEMBERS.find(m => m.person === name)) { errEl.textContent = 'Déjà dans l\'équipe.'; return; }
+  const res = await fetch('/api/members/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person: name, role })
+  });
+  if (!res.ok) { errEl.textContent = 'Erreur lors de l\'ajout.'; return; }
+  document.getElementById('new-name').value = '';
+  document.getElementById('new-role').value = '';
+  document.getElementById('add-member-dialog').close();
+  await loadData();
+  populateSelect();
+  update();
+});
+
+document.getElementById('add-member-cancel').addEventListener('click', () => {
+  document.getElementById('add-member-error').textContent = '';
+  document.getElementById('new-name').value = '';
+  document.getElementById('new-role').value = '';
+  document.getElementById('add-member-dialog').close();
+});
+
+document.getElementById('add-role-btn').addEventListener('click', async () => {
+  const name = document.getElementById('new-role-name').value.trim().toUpperCase();
+  const color = document.getElementById('new-role-color').value;
+  const errEl = document.getElementById('role-error');
+  errEl.textContent = '';
+  if (!name) { errEl.textContent = 'Nom requis.'; return; }
+  const res = await fetch('/api/roles/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, color }) });
+  if (res.status === 409) { errEl.textContent = 'Ce rôle existe déjà.'; return; }
+  if (!res.ok) { errEl.textContent = 'Erreur lors de l\'ajout.'; return; }
+  document.getElementById('new-role-name').value = '';
+  await loadRoles();
+  populateRoleSelect();
+  populateRoleMgmtDialog();
+});
+
+document.getElementById('role-mgmt-close').addEventListener('click', () => {
+  document.getElementById('role-error').textContent = '';
+  document.getElementById('new-role-name').value = '';
+  document.getElementById('role-mgmt-dialog').close();
+});
+
+// ── Quick buttons ──
+document.querySelectorAll('.quick-btn[data-range]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.quick-btn[data-range]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const range = btn.dataset.range;
+    switch(range) {
+      case 'month': {
+        const now = new Date();
+        const m = now.getUTCMonth() + 1;
+        const mStr = String(m).padStart(2,'0');
+        const lastDay = new Date(Date.UTC(2026, m, 0)).getUTCDate();
+        dateStart.value = `2026-${mStr}-01`;
+        dateEnd.value = `2026-${mStr}-${String(lastDay).padStart(2,'0')}`;
+        if (dateStart.value < '2026-03-16') dateStart.value = '2026-03-16';
+        break;
+      }
+      case 'q2': dateStart.value = '2026-04-01'; dateEnd.value = '2026-06-30'; break;
+      case 'q3': dateStart.value = '2026-07-01'; dateEnd.value = '2026-09-30'; break;
+      case 'q4': dateStart.value = '2026-10-01'; dateEnd.value = '2026-12-31'; break;
+      case 'year': dateStart.value = '2026-03-16'; dateEnd.value = '2026-12-31'; break;
+    }
+    update();
+  });
+});
+
+dateStart.addEventListener('change', update);
+dateEnd.addEventListener('change', update);
+
+// ── Multi-select dropdown toggle ──
+document.getElementById('person-display').addEventListener('click', e => {
+  e.stopPropagation();
+  const dd = document.getElementById('person-dropdown');
+  dd.style.display = dd.style.display === 'none' ? '' : 'none';
+});
+document.addEventListener('click', () => {
+  const dd = document.getElementById('person-dropdown');
+  if (dd) dd.style.display = 'none';
+});
+document.getElementById('person-dropdown').addEventListener('click', e => e.stopPropagation());
+
+// ── Filtre "Les devs" ──
+document.getElementById('devs-btn').addEventListener('click', () => {
+  const devNames = new Set(MEMBERS.filter(m => m.role === 'DEV').map(m => m.person));
+  document.querySelectorAll('.person-chk').forEach(chk => { chk.checked = devNames.has(chk.dataset.person); });
+  const allChk = document.getElementById('chk-all');
+  if (allChk) allChk.checked = [...document.querySelectorAll('.person-chk')].every(c => c.checked);
+  updateSelectDisplay();
+  update();
+});
+
+// ── Init ──
+(async () => {
+  await loadData();
+  populateSelect();
+  update();
+})();
+</script>
+</body>
+</html>
