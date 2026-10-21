@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Suivi Congés 2026</title>
+<title>Suivi Congés</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,7 +11,7 @@
 
 <div class="header">
   <h1>Suivi des Congés</h1>
-  <span class="year">2026</span>
+  <span class="year" id="year-label"></span>
 </div>
 
 <div class="controls">
@@ -23,16 +23,21 @@
     </div>
   </div>
   <div class="field">
+    <label>Année</label>
+    <select id="year-select"></select>
+  </div>
+  <div class="field">
     <label>Date de début</label>
-    <input type="date" id="date-start" value="2026-03-16" min="2026-03-16" max="2026-12-31">
+    <input type="date" id="date-start">
   </div>
   <div class="field">
     <label>Date de fin</label>
-    <input type="date" id="date-end" value="2026-12-31" min="2026-03-16" max="2026-12-31">
+    <input type="date" id="date-end">
   </div>
   <div class="quick-btns">
     <button class="quick-btn" id="devs-btn">Les devs</button>
     <button class="quick-btn" data-range="month">Ce mois</button>
+    <button class="quick-btn" data-range="q1">T1 (Jan–Mar)</button>
     <button class="quick-btn" data-range="q2">T2 (Avr–Juin)</button>
     <button class="quick-btn" data-range="q3">T3 (Juil–Sep)</button>
     <button class="quick-btn" data-range="q4">T4 (Oct–Déc)</button>
@@ -71,6 +76,36 @@
   </div>
 </dialog>
 
+<dialog id="data-mgmt-dialog" class="add-member-dialog">
+  <h3>Années &amp; historique</h3>
+  <div class="dialog-body">
+    <p class="data-range-info" id="data-range-info"></p>
+
+    <div class="data-section">
+      <h4>Créer une nouvelle année</h4>
+      <p class="data-hint">Tous les membres sont marqués présents sur les jours ouvrés (hors week-ends et jours fériés).</p>
+      <div class="data-row">
+        <input type="number" id="new-year" min="2000" max="2100" step="1">
+        <button class="dialog-btn primary" id="add-year-btn">Créer l'année</button>
+      </div>
+      <span id="add-year-msg" class="data-msg"></span>
+    </div>
+
+    <div class="data-section danger">
+      <h4>Supprimer l'historique</h4>
+      <p class="data-hint">Supprime toutes les présences <strong>avant</strong> la date choisie (la date elle-même est conservée). Une sauvegarde de la base est faite avant.</p>
+      <div class="data-row">
+        <input type="date" id="purge-date">
+        <button class="dialog-btn danger" id="purge-btn">Supprimer</button>
+      </div>
+      <span id="purge-msg" class="data-msg"></span>
+    </div>
+  </div>
+  <div class="dialog-actions">
+    <button class="dialog-btn" id="data-mgmt-close">Fermer</button>
+  </div>
+</dialog>
+
 <div id="save-indicator" class="save-indicator">Sauvegardé ✓</div>
 
 <div id="team-overview" class="team-overview" style="display:none">
@@ -92,19 +127,9 @@ const MONTHS_FR = ['','Janvier','Février','Mars','Avril','Mai','Juin','Juillet'
 const DAYS_FR = ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
 const TODAY = new Date().toISOString().slice(0, 10);
 
-// Jours fériés français 2026
-const HOLIDAYS = new Map([
-  ['2026-04-06', 'Lundi de Pâques'],
-  ['2026-05-01', 'Fête du Travail'],
-  ['2026-05-08', 'Victoire 1945'],
-  ['2026-05-14', 'Ascension'],
-  ['2026-05-25', 'Lundi de Pentecôte'],
-  ['2026-07-14', 'Fête Nationale'],
-  ['2026-08-15', 'Assomption'],
-  ['2026-11-01', 'Toussaint'],
-  ['2026-11-11', 'Armistice'],
-  ['2026-12-25', 'Noël'],
-]);
+// Jours fériés et plage de données, fournis par /api/calendar
+let HOLIDAYS = new Map();
+let CALENDAR = { min: null, max: null, years: [] };
 
 let DATA = null;
 let PROVISIONAL = {};
@@ -140,14 +165,50 @@ function populateRoleSelect() {
 
 // ── Storage helpers ──
 async function loadData() {
-  const [dataRes, membersRes, rolesRes] = await Promise.all([fetch('/api/data'), fetch('/api/members'), fetch('/api/roles')]);
+  const [dataRes, membersRes, rolesRes, calRes] = await Promise.all([fetch('/api/data'), fetch('/api/members'), fetch('/api/roles'), fetch('/api/calendar')]);
   const result = await dataRes.json();
   DATA = result.data;
   PROVISIONAL = result.provisional;
   MEMBERS = await membersRes.json();
   ROLES_DATA = await rolesRes.json();
   ROLES = [null, ...ROLES_DATA.map(r => r.name)];
+  CALENDAR = await calRes.json();
+  HOLIDAYS = new Map(Object.entries(CALENDAR.holidays));
   populateRoleSelect();
+  applyCalendarBounds();
+}
+
+// ── Year / date range helpers ──
+const yearSelect = document.getElementById('year-select');
+
+function fmtDateFr(key) { return key ? key.split('-').reverse().join('/') : '—'; }
+
+function applyCalendarBounds() {
+  const { min, max, years } = CALENDAR;
+  [dateStart, dateEnd].forEach(inp => { inp.min = min || ''; inp.max = max || ''; });
+  const prev = yearSelect.value;
+  yearSelect.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+  if (years.includes(Number(prev))) yearSelect.value = prev;
+  document.getElementById('year-label').textContent = years.length === 0 ? ''
+    : years.length === 1 ? years[0] : `${years[0]}–${years[years.length - 1]}`;
+}
+
+function defaultYear() {
+  const y = Number(TODAY.slice(0, 4));
+  return CALENDAR.years.includes(y) ? y : CALENDAR.years[CALENDAR.years.length - 1];
+}
+
+// Sets the date inputs to [start, end], clamped to the data range
+function setRange(start, end) {
+  dateStart.value = CALENDAR.min && start < CALENDAR.min ? CALENDAR.min : start;
+  dateEnd.value = CALENDAR.max && end > CALENDAR.max ? CALENDAR.max : end;
+}
+
+function selectYear(year) {
+  if (year === undefined) return;
+  yearSelect.value = year;
+  document.querySelectorAll('.quick-btn[data-range]').forEach(b => b.classList.toggle('active', b.dataset.range === 'year'));
+  setRange(`${year}-01-01`, `${year}-12-31`);
 }
 
 async function loadRoles() {
@@ -264,6 +325,14 @@ function populateSelect() {
     openRoleMgmtDialog();
   });
   dropdown.appendChild(rolesItem);
+  const dataItem = document.createElement('div');
+  dataItem.className = 'multi-select-item add-person-item';
+  dataItem.textContent = '📅 Années & historique';
+  dataItem.addEventListener('click', () => {
+    document.getElementById('person-dropdown').style.display = 'none';
+    openDataMgmtDialog();
+  });
+  dropdown.appendChild(dataItem);
   const addItem = document.createElement('div');
   addItem.className = 'multi-select-item add-person-item';
   addItem.textContent = '+ Personne';
@@ -340,14 +409,16 @@ function renderCard(name, stats, role) {
   const level = getLevel(stats.pct);
   const months = {};
   stats.days.forEach(d => {
-    const m = parseInt(d.date.slice(5, 7));
-    if (!months[m]) months[m] = [];
-    months[m].push(d);
+    const ym = d.date.slice(0, 7);
+    if (!months[ym]) months[ym] = [];
+    months[ym].push(d);
   });
+  const multiYear = stats.days.length > 0 && stats.days[0].date.slice(0, 4) !== stats.days[stats.days.length - 1].date.slice(0, 4);
 
   let calendarHTML = '';
-  for (const [m, days] of Object.entries(months)) {
-    calendarHTML += `<div class="month-grid"><div class="month-label">${MONTHS_FR[parseInt(m)]}</div><div class="days-row">`;
+  for (const [ym, days] of Object.entries(months)) {
+    const monthLabel = MONTHS_FR[parseInt(ym.slice(5, 7))] + (multiYear ? ` ${ym.slice(0, 4)}` : '');
+    calendarHTML += `<div class="month-grid"><div class="month-label">${monthLabel}</div><div class="days-row">`;
     days.forEach(d => {
       const dayNum = parseInt(d.date.slice(8, 10));
       const dayName = DAYS_FR[d.dow];
@@ -554,6 +625,12 @@ function update() {
   const start = dateStart.value;
   const end = dateEnd.value;
 
+  if (CALENDAR.years.length === 0) {
+    resultsDiv.innerHTML = '<div class="empty-state"><div class="icon">📅</div><p>Aucune donnée. Crée une année via « 📅 Années &amp; historique » dans le menu Personnes.</p></div>';
+    teamOverview.style.display = 'none';
+    return;
+  }
+
   if (!start || !end || start > end) {
     resultsDiv.innerHTML = '<div class="empty-state"><div class="icon">📅</div><p>Sélectionne une période valide pour voir les résultats.</p></div>';
     teamOverview.style.display = 'none';
@@ -700,21 +777,22 @@ document.querySelectorAll('.quick-btn[data-range]').forEach(btn => {
     document.querySelectorAll('.quick-btn[data-range]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     const range = btn.dataset.range;
+    const y = yearSelect.value;
     switch(range) {
       case 'month': {
-        const now = new Date();
-        const m = now.getUTCMonth() + 1;
+        const ty = Number(TODAY.slice(0, 4));
+        const m = Number(TODAY.slice(5, 7));
         const mStr = String(m).padStart(2,'0');
-        const lastDay = new Date(Date.UTC(2026, m, 0)).getUTCDate();
-        dateStart.value = `2026-${mStr}-01`;
-        dateEnd.value = `2026-${mStr}-${String(lastDay).padStart(2,'0')}`;
-        if (dateStart.value < '2026-03-16') dateStart.value = '2026-03-16';
+        const lastDay = new Date(Date.UTC(ty, m, 0)).getUTCDate();
+        if (CALENDAR.years.includes(ty)) yearSelect.value = ty;
+        setRange(`${ty}-${mStr}-01`, `${ty}-${mStr}-${String(lastDay).padStart(2,'0')}`);
         break;
       }
-      case 'q2': dateStart.value = '2026-04-01'; dateEnd.value = '2026-06-30'; break;
-      case 'q3': dateStart.value = '2026-07-01'; dateEnd.value = '2026-09-30'; break;
-      case 'q4': dateStart.value = '2026-10-01'; dateEnd.value = '2026-12-31'; break;
-      case 'year': dateStart.value = '2026-03-16'; dateEnd.value = '2026-12-31'; break;
+      case 'q1': setRange(`${y}-01-01`, `${y}-03-31`); break;
+      case 'q2': setRange(`${y}-04-01`, `${y}-06-30`); break;
+      case 'q3': setRange(`${y}-07-01`, `${y}-09-30`); break;
+      case 'q4': setRange(`${y}-10-01`, `${y}-12-31`); break;
+      case 'year': setRange(`${y}-01-01`, `${y}-12-31`); break;
     }
     update();
   });
@@ -722,6 +800,92 @@ document.querySelectorAll('.quick-btn[data-range]').forEach(btn => {
 
 dateStart.addEventListener('change', update);
 dateEnd.addEventListener('change', update);
+yearSelect.addEventListener('change', () => { selectYear(Number(yearSelect.value)); update(); });
+
+// ── Years & history management ──
+function countRowsBefore(date) {
+  let rows = 0;
+  const persons = new Set();
+  for (const [person, days] of Object.entries(DATA)) {
+    for (const d of Object.keys(days)) if (d < date) { rows++; persons.add(person); }
+  }
+  return { rows, persons: persons.size };
+}
+
+function refreshPurgePreview() {
+  const date = document.getElementById('purge-date').value;
+  const msg = document.getElementById('purge-msg');
+  msg.className = 'data-msg';
+  if (!date) { msg.textContent = ''; return; }
+  const { rows, persons } = countRowsBefore(date);
+  msg.textContent = rows === 0
+    ? `Aucune donnée avant le ${fmtDateFr(date)}.`
+    : `${rows} jour(s) de présence sur ${persons} personne(s) seront supprimés.`;
+}
+
+// Refreshes the range info and suggested next year in the dialog
+function refreshDataRangeInfo() {
+  const { min, max, years } = CALENDAR;
+  document.getElementById('data-range-info').textContent = min
+    ? `Données actuelles : du ${fmtDateFr(min)} au ${fmtDateFr(max)}.`
+    : 'Aucune donnée pour le moment.';
+  document.getElementById('new-year').value = years.length ? years[years.length - 1] + 1 : TODAY.slice(0, 4);
+}
+
+function openDataMgmtDialog() {
+  refreshDataRangeInfo();
+  const purgeInput = document.getElementById('purge-date');
+  purgeInput.max = TODAY;
+  purgeInput.value = '';
+  ['add-year-msg', 'purge-msg'].forEach(id => { const el = document.getElementById(id); el.textContent = ''; el.className = 'data-msg'; });
+  document.getElementById('data-mgmt-dialog').showModal();
+}
+
+document.getElementById('purge-date').addEventListener('input', refreshPurgePreview);
+
+document.getElementById('add-year-btn').addEventListener('click', async () => {
+  const year = Number(document.getElementById('new-year').value);
+  const msg = document.getElementById('add-year-msg');
+  msg.className = 'data-msg';
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) { msg.textContent = 'Année invalide.'; msg.classList.add('error'); return; }
+  if (!confirm(`Créer l'année ${year} pour les ${MEMBERS.length} membres de l'équipe ?`)) return;
+  const res = await fetch('/api/years/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ year }) });
+  const body = await res.json();
+  if (!res.ok) { msg.textContent = body.error || 'Erreur lors de la création.'; msg.classList.add('error'); return; }
+  await loadData();
+  selectYear(year);
+  update();
+  flashSave();
+  msg.textContent = `Année ${year} créée : ${body.days} jours ouvrés × ${body.members} personnes.`;
+  msg.classList.add('ok');
+  refreshDataRangeInfo();
+});
+
+document.getElementById('purge-btn').addEventListener('click', async () => {
+  const before = document.getElementById('purge-date').value;
+  const msg = document.getElementById('purge-msg');
+  msg.className = 'data-msg';
+  if (!before) { msg.textContent = 'Choisis une date.'; msg.classList.add('error'); return; }
+  if (before > TODAY) { msg.textContent = 'La date doit être aujourd\'hui ou dans le passé.'; msg.classList.add('error'); return; }
+  const { rows } = countRowsBefore(before);
+  if (rows === 0) { msg.textContent = `Aucune donnée avant le ${fmtDateFr(before)}.`; return; }
+  if (!confirm(`Supprimer définitivement ${rows} jour(s) de présence antérieurs au ${fmtDateFr(before)} ?`)) return;
+  const res = await fetch('/api/purge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ before }) });
+  const body = await res.json();
+  if (!res.ok) { msg.textContent = body.error || 'Erreur lors de la suppression.'; msg.classList.add('error'); return; }
+  const prevYear = Number(yearSelect.value);
+  await loadData();
+  selectYear(CALENDAR.years.includes(prevYear) ? prevYear : defaultYear());
+  update();
+  flashSave();
+  msg.textContent = `${body.deleted} ligne(s) supprimée(s). Sauvegarde : backups/${body.backup}`;
+  msg.classList.add('ok');
+  refreshDataRangeInfo();
+});
+
+document.getElementById('data-mgmt-close').addEventListener('click', () => {
+  document.getElementById('data-mgmt-dialog').close();
+});
 
 // ── Multi-select dropdown toggle ──
 document.getElementById('person-display').addEventListener('click', e => {
@@ -748,6 +912,7 @@ document.getElementById('devs-btn').addEventListener('click', () => {
 // ── Init ──
 (async () => {
   await loadData();
+  selectYear(defaultYear());
   populateSelect();
   update();
 })();

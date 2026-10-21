@@ -1,6 +1,6 @@
 # helper-absences
 
-Application web de suivi des présences/absences pour 2026. Permet de suivre les jours de présence de chaque membre de l'équipe sur les jours ouvrés.
+Application web de suivi des présences/absences, sur une ou plusieurs années. Permet de suivre les jours de présence de chaque membre de l'équipe sur les jours ouvrés.
 
 ## Prérequis
 
@@ -54,6 +54,8 @@ PORT=8080 node server.js
 - **Renommer un membre** : double-cliquer sur son nom dans sa carte
 - **Gérer les rôles** (ajout, renommage, couleur, suppression) : "⚙ Rôles" dans le menu déroulant
 - **Basculer une présence** : cliquer sur un jour dans la grille d'une carte
+- **Créer l'année suivante** : "📅 Années & historique" dans le menu déroulant → "Créer l'année". Tous les membres sont marqués présents sur les jours ouvrés de l'année.
+- **Supprimer l'historique** : même fenêtre → choisir une date (aujourd'hui ou passée) → "Supprimer". Toutes les présences **avant** cette date sont supprimées ; une copie de la base est d'abord écrite dans `backups/` (ignoré par git).
 
 ## Structure
 
@@ -67,4 +69,4 @@ package.json
 
 ## Plage de dates
 
-Du **16 mars 2026** au **31 décembre 2026**, jours ouvrés uniquement (hors week-ends et jours fériés français).
+La plage affichée est celle des données présentes en base (de la plus ancienne à la plus récente date), jours ouvrés uniquement. Les jours fériés français sont calculés automatiquement pour chaque année (Pâques, Ascension et Pentecôte comprises).
