@@ -1,4 +1,4 @@
-import { holidaysOf } from './calendar.js';
+import { holidaysOf, DATE_RE } from './calendar.js';
 
 // ── Data access on Cloudflare D1 (binding env.DB) ──
 // Lists of dates are passed as a single JSON parameter and expanded with json_each(),
@@ -86,9 +86,11 @@ export async function setMemberRole(db, person, role) {
   await db.prepare('UPDATE members SET role = ?1 WHERE person = ?2').bind(role, person).run();
 }
 
-// attendance follows through ON UPDATE CASCADE ; returns false if oldName does not exist
-export async function renameMember(db, oldName, newName) {
-  const { meta } = await q(db.prepare('UPDATE members SET person = ?1 WHERE person = ?2').bind(newName, oldName).run());
+// Name and role in one statement; attendance follows through ON UPDATE CASCADE.
+// Returns false if `person` does not exist.
+export async function updateMember(db, person, newName, role) {
+  const { meta } = await q(db.prepare('UPDATE members SET person = ?1, role = ?2 WHERE person = ?3')
+    .bind(newName, role, person).run());
   return meta.changes > 0;
 }
 
@@ -158,6 +160,46 @@ export async function setAttendance(db, person, dates, present, provisional) {
   const updated = results.map(r => r.date).sort();
   const done = new Set(updated);
   return { updated, skipped: [...new Set(dates)].filter(d => !done.has(d)).sort() };
+}
+
+// ── Periods (e.g. PFA: no delivery) ──
+const PERIOD_COLS = 'id, name, start_date AS start, end_date AS end, color, description';
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+// Validates and trims a period coming from the API or MCP; throws HttpError(400)
+export function normalizePeriod({ name, start, end, color, description } = {}) {
+  name = String(name ?? '').trim();
+  if (!name) throw new HttpError(400, 'Nom de période requis.');
+  if (!DATE_RE.test(start || '') || !DATE_RE.test(end || '')) throw new HttpError(400, 'Dates invalides (YYYY-MM-DD).');
+  if (start > end) throw new HttpError(400, 'La date de début doit précéder la date de fin.');
+  return {
+    name: name.slice(0, 60),
+    start, end,
+    color: COLOR_RE.test(color || '') ? color : '#e5534b',
+    description: String(description ?? '').trim().slice(0, 500),
+  };
+}
+
+// Periods overlapping [start, end] (all if omitted), by start date
+export async function getPeriods(db, start = '0000-01-01', end = '9999-12-31') {
+  return (await db.prepare(`SELECT ${PERIOD_COLS} FROM periods
+     WHERE end_date >= ?1 AND start_date <= ?2 ORDER BY start_date, name`).bind(start, end).all()).results;
+}
+
+export async function addPeriod(db, { name, start, end, color, description }) {
+  return db.prepare(`INSERT INTO periods (name, start_date, end_date, color, description)
+     VALUES (?1, ?2, ?3, ?4, ?5) RETURNING ${PERIOD_COLS}`).bind(name, start, end, color, description).first();
+}
+
+// null if the id does not exist
+export async function updatePeriod(db, id, { name, start, end, color, description }) {
+  return db.prepare(`UPDATE periods SET name = ?1, start_date = ?2, end_date = ?3, color = ?4, description = ?5
+     WHERE id = ?6 RETURNING ${PERIOD_COLS}`).bind(name, start, end, color, description, id).first();
+}
+
+// null if the id does not exist
+export async function deletePeriod(db, id) {
+  return db.prepare(`DELETE FROM periods WHERE id = ?1 RETURNING ${PERIOD_COLS}`).bind(id).first();
 }
 
 // Appends to the changes journal; never fails the caller

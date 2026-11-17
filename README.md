@@ -11,7 +11,7 @@ Tout tourne sur Cloudflare :
   - `helper-absences-mcp` (`wrangler.mcp.jsonc`) : le serveur MCP `/mcp`.
 
   Sur une adresse `*.workers.dev`, Cloudflare Access protège tout le Worker : le MCP a donc sa propre adresse, hors Access.
-- **D1** (base SQLite de Cloudflare, liaison `DB`) : tables `members`, `roles`, `attendance`, plus `attendance_archive` (lignes purgées) et `changes` (journal des modifications). Schéma dans `migrations/`.
+- **D1** (base SQLite de Cloudflare, liaison `DB`) : tables `members`, `roles`, `attendance`, `periods`, plus `attendance_archive` (lignes purgées) et `changes` (journal des modifications). Schéma dans `migrations/`.
 - **Sécurité** :
   - l'interface et `/api/*` sont protégées par **Cloudflare Access** (le Worker vérifie aussi le jeton Access) ;
   - le Worker MCP n'est pas derrière Access et est protégé par un **jeton** (`Authorization: Bearer <MCP_TOKEN>`).
@@ -92,14 +92,19 @@ claude mcp add --transport http absences https://helper-absences-mcp.<compte>.wo
 | `team_availability` | Qui est présent chaque jour (93 jours max) |
 | `find_common_availability` | Jours où un groupe de personnes est entièrement présent |
 | `list_recent_changes` | Journal des modifications |
+| `list_periods` | Périodes de l'équipe (ex. PFA : pas de livraison) sur une plage |
 | `set_attendance` | Fixe présent / demi-journée / absent (éventuellement provisoire) sur des dates ou une période |
+| `save_period` / `delete_period` | Crée, modifie ou supprime une période |
+
+`team_availability` indique les périodes de chaque jour. `find_common_availability` peut exclure des périodes (`avoid_periods: ["PFA"]`).
 
 Chaque modification (web ou MCP) est enregistrée dans la table `changes`.
 
 ## Utilisation de l'interface
 
 - **Ajouter un membre** : menu déroulant "Personnes" → "+ Personne"
-- **Renommer un membre** : double-cliquer sur son nom dans sa carte
+- **Modifier un membre** (nom, rôle, suppression) : ✎ à côté de son nom dans le menu "Personnes" ou sur sa carte (ou double-clic sur le nom)
+- **Gérer les périodes** (ex. PFA, période de forte activité sans livraison) : "🚩 Périodes" dans le menu "Personnes". Les périodes s'affichent au-dessus des cartes et soulignent les jours concernés dans les calendriers.
 - **Gérer les rôles** : "⚙ Rôles" dans le menu déroulant
 - **Basculer une présence** : clic sur un jour (Présent → Absent → Demi-journée), clic droit pour "Provisoire"
 - **Créer l'année suivante** : "📅 Années & historique" → "Créer l'année" (tout le monde présent sur les jours ouvrés)

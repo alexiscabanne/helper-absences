@@ -60,6 +60,51 @@
   </div>
 </dialog>
 
+<dialog id="edit-member-dialog" class="add-member-dialog">
+  <h3>Modifier une personne</h3>
+  <div class="dialog-body">
+    <label class="field-label" for="edit-name">Nom</label>
+    <input type="text" id="edit-name">
+    <label class="field-label" for="edit-role">Rôle</label>
+    <select id="edit-role"></select>
+    <span id="edit-member-error" class="data-msg error"></span>
+  </div>
+  <div class="dialog-actions">
+    <button id="edit-member-delete" class="dialog-btn danger push-left">Supprimer</button>
+    <button id="edit-member-cancel" class="dialog-btn">Annuler</button>
+    <button id="edit-member-save" class="dialog-btn primary">Enregistrer</button>
+  </div>
+</dialog>
+
+<dialog id="period-mgmt-dialog" class="add-member-dialog">
+  <h3>Périodes</h3>
+  <div class="dialog-body">
+    <p class="data-hint">Plages qui concernent toute l'équipe, par exemple une PFA (période de forte activité, pas de livraison). Elles apparaissent sur les calendriers et sont visibles des agents via le MCP.</p>
+    <div id="period-list"></div>
+    <div class="data-section" id="period-form">
+      <h4 id="period-form-title">Nouvelle période</h4>
+      <div class="data-row">
+        <input type="color" id="period-color" value="#e5534b" title="Couleur">
+        <input type="text" id="period-name" placeholder="Nom (ex. PFA)" maxlength="60">
+      </div>
+      <div class="data-row">
+        <input type="date" id="period-start" title="Premier jour">
+        <span class="data-hint">→</span>
+        <input type="date" id="period-end" title="Dernier jour">
+      </div>
+      <input type="text" id="period-description" placeholder="Description (ex. pas de livraison)" maxlength="500">
+      <div class="data-row">
+        <span id="period-msg" class="data-msg"></span>
+        <button class="dialog-btn" id="period-form-cancel" style="display:none">Annuler</button>
+        <button class="dialog-btn primary" id="period-save-btn">Ajouter</button>
+      </div>
+    </div>
+  </div>
+  <div class="dialog-actions">
+    <button class="dialog-btn" id="period-mgmt-close">Fermer</button>
+  </div>
+</dialog>
+
 <dialog id="role-mgmt-dialog" class="add-member-dialog">
   <h3>Gérer les rôles</h3>
   <div class="dialog-body">
@@ -108,6 +153,8 @@
 
 <div id="save-indicator" class="save-indicator">Sauvegardé ✓</div>
 
+<div id="periods-bar" class="periods-bar"></div>
+
 <div id="team-overview" class="team-overview" style="display:none">
   <h2 id="team-overview-toggle">
     Vue d'ensemble de l'équipe<span class="collapse-arrow">▾</span>
@@ -134,6 +181,20 @@ let CALENDAR = { min: null, max: null, years: [] };
 let DATA = null;
 let PROVISIONAL = {};
 let MEMBERS = [];
+let PERIODS = [];   // [{ id, name, start, end, color, description }]
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function postJson(url, body) {
+  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+// Periods covering a date
+function periodsOn(dateKey) {
+  return PERIODS.filter(p => p.start <= dateKey && dateKey <= p.end);
+}
 
 const dateStart = document.getElementById('date-start');
 const dateEnd = document.getElementById('date-end');
@@ -153,19 +214,22 @@ function hexToRgba(hex, alpha) {
 }
 
 function populateRoleSelect() {
-  const sel = document.getElementById('new-role');
-  while (sel.options.length > 1) sel.remove(1);
-  ROLES_DATA.forEach(r => {
-    const opt = document.createElement('option');
-    opt.value = r.name;
-    opt.textContent = r.name;
-    sel.appendChild(opt);
+  ['new-role', 'edit-role'].forEach(id => {
+    const sel = document.getElementById(id);
+    sel.innerHTML = '<option value="">— Rôle —</option>';
+    ROLES_DATA.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.name;
+      opt.textContent = r.name;
+      sel.appendChild(opt);
+    });
   });
 }
 
 // ── Storage helpers ──
 async function loadData() {
-  const [dataRes, membersRes, rolesRes, calRes] = await Promise.all([fetch('/api/data'), fetch('/api/members'), fetch('/api/roles'), fetch('/api/calendar')]);
+  const [dataRes, membersRes, rolesRes, calRes, periodsRes] = await Promise.all([fetch('/api/data'), fetch('/api/members'), fetch('/api/roles'), fetch('/api/calendar'), fetch('/api/periods')]);
+  PERIODS = await periodsRes.json();
   const result = await dataRes.json();
   DATA = result.data;
   PROVISIONAL = result.provisional;
@@ -280,7 +344,7 @@ function getSelectedPersons() {
 function populateSelect() {
   const dropdown = document.getElementById('person-dropdown');
   const prevSelected = new Set([...document.querySelectorAll('.person-chk:checked')].map(c => c.dataset.person));
-  const hadSelection = prevSelected.size > 0;
+  const hadSelection = prevSelected.size > 0 && !document.getElementById('chk-all')?.checked;
   dropdown.innerHTML = '';
 
   const allItem = document.createElement('label');
@@ -292,31 +356,32 @@ function populateSelect() {
     const item = document.createElement('label');
     item.className = 'multi-select-item';
     const isChecked = !hadSelection || prevSelected.has(person);
-    item.innerHTML = `<input type="checkbox" class="person-chk" data-person="${person}" ${isChecked ? 'checked' : ''}> <span class="person-label">${person}</span>`;
-    const delBtn = document.createElement('span');
-    delBtn.className = 'person-delete-btn';
-    delBtn.textContent = '×';
-    delBtn.title = `Supprimer ${person}`;
-    delBtn.addEventListener('click', async e => {
+    item.innerHTML = `<input type="checkbox" class="person-chk" data-person="${esc(person)}" ${isChecked ? 'checked' : ''}> <span class="person-label">${esc(person)}</span>`;
+    const editBtn = document.createElement('span');
+    editBtn.className = 'person-edit-btn';
+    editBtn.textContent = '✎';
+    editBtn.title = `Modifier ${person}`;
+    editBtn.addEventListener('click', e => {
       e.preventDefault();
       e.stopPropagation();
-      if (!confirm(`Supprimer ${person} et toutes ses données ?`)) return;
-      await fetch('/api/members/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ person })
-      });
-      await loadData();
-      populateSelect();
-      update();
+      dropdown.style.display = 'none';
+      openEditMember(person);
     });
-    item.appendChild(delBtn);
+    item.appendChild(editBtn);
     dropdown.appendChild(item);
   });
 
   const sep = document.createElement('div');
   sep.className = 'multi-select-sep';
   dropdown.appendChild(sep);
+  const periodsItem = document.createElement('div');
+  periodsItem.className = 'multi-select-item add-person-item';
+  periodsItem.textContent = '🚩 Périodes';
+  periodsItem.addEventListener('click', () => {
+    dropdown.style.display = 'none';
+    openPeriodDialog();
+  });
+  dropdown.appendChild(periodsItem);
   const rolesItem = document.createElement('div');
   rolesItem.className = 'multi-select-item add-person-item';
   rolesItem.textContent = '⚙ Rôles';
@@ -434,12 +499,16 @@ function renderCard(name, stats, role) {
       else cls += 'sunday';
       if (isProv) cls += ' provisional';
       if (d.date === TODAY) cls += ' today';
+      const inPeriods = periodsOn(d.date);
+      const periodStyle = inPeriods.length ? `style="--period-color:${inPeriods[0].color}"` : '';
+      if (inPeriods.length) cls += ' in-period';
+      const periodText = inPeriods.length ? ` · ${inPeriods.map(p => esc(p.name)).join(', ')}` : '';
       const clickAttr = isClickable && !holidayName ? `onclick="toggleDay('${name}','${d.date}')" oncontextmenu="toggleProvisional(event,'${name}','${d.date}')"` : '';
       const baseStatus = d.isWeekend ? 'Weekend' : holidayName ? holidayName : d.val === 1 ? 'Présent' : d.val === 0.5 ? 'Demi-journée' : d.val === 0 ? 'Absent' : '—';
       const statusText = isProv ? `${baseStatus} (Provisoire)` : baseStatus;
       const clickHint = isClickable && !holidayName ? ' · Cliquer pour changer' : '';
       const label = isProv ? 'P' : dayNum;
-      calendarHTML += `<div class="${cls}" ${clickAttr}><span class="tooltip">${dayName} ${dayNum} – ${statusText}${clickHint}</span>${label}</div>`;
+      calendarHTML += `<div class="${cls}" ${periodStyle} ${clickAttr}><span class="tooltip">${dayName} ${dayNum} – ${statusText}${periodText}${clickHint}</span>${label}</div>`;
     });
     calendarHTML += '</div></div>';
   }
@@ -455,7 +524,8 @@ function renderCard(name, stats, role) {
     <div class="card" draggable="true" data-person="${name}">
       <div class="card-header">
         <span class="drag-handle" title="Glisser pour réordonner">⠿</span>
-        <span class="card-name" ondblclick="startEditName(this, '${name}')" title="Double-cliquer pour renommer">${name}</span>
+        <span class="card-name" ondblclick="openEditMember('${name}')" title="Double-cliquer pour modifier">${name}</span>
+        <button class="card-edit-btn" onclick="openEditMember('${name}')" title="Modifier ${name}">✎</button>
         ${roleBadgeHtml}
         <span class="card-pct ${level}">${stats.pct}%</span>
       </div>
@@ -474,55 +544,171 @@ function renderCard(name, stats, role) {
   `;
 }
 
-// ── Inline person rename ──
-function startEditName(span, oldName) {
-  if (span.querySelector('input')) return;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'card-name-input';
-  input.value = oldName;
-  span.textContent = '';
-  span.appendChild(input);
-  input.focus();
-  input.select();
-  let committed = false;
-  function commit() {
-    if (committed) return;
-    committed = true;
-    const newName = input.value.trim();
-    span.textContent = oldName;
-    saveName(oldName, newName);
-  }
-  function cancel() {
-    if (committed) return;
-    committed = true;
-    span.textContent = oldName;
-  }
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
-  });
-  input.addEventListener('blur', commit);
+// ── Edit a person (name, role, delete) ──
+const editMemberDialog = document.getElementById('edit-member-dialog');
+let editingPerson = null;
+
+function openEditMember(person) {
+  const m = MEMBERS.find(m => m.person === person);
+  if (!m) return;
+  editingPerson = person;
+  document.getElementById('edit-name').value = person;
+  document.getElementById('edit-role').value = m.role || '';
+  document.getElementById('edit-member-error').textContent = '';
+  editMemberDialog.showModal();
+  document.getElementById('edit-name').select();
 }
 
-async function saveName(oldName, newName) {
-  if (!newName || newName === oldName) return;
-  if (MEMBERS.find(m => m.person === newName)) { alert(`"${newName}" est déjà dans l'équipe.`); return; }
-  const res = await fetch('/api/members/rename', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ oldName, newName })
-  });
-  if (res.status === 409) { alert(`"${newName}" existe déjà.`); return; }
-  if (!res.ok) { alert('Erreur lors du renommage.'); return; }
-  if (DATA[oldName] !== undefined) { DATA[newName] = DATA[oldName]; delete DATA[oldName]; }
-  if (PROVISIONAL[oldName] !== undefined) { PROVISIONAL[newName] = PROVISIONAL[oldName]; delete PROVISIONAL[oldName]; }
-  const m = MEMBERS.find(m => m.person === oldName);
-  if (m) m.person = newName;
+async function saveEditMember() {
+  const person = editingPerson;
+  const newName = document.getElementById('edit-name').value.trim();
+  const role = document.getElementById('edit-role').value || null;
+  const errEl = document.getElementById('edit-member-error');
+  errEl.textContent = '';
+  if (!newName) { errEl.textContent = 'Nom requis.'; return; }
+  if (newName !== person && MEMBERS.find(m => m.person === newName)) { errEl.textContent = `"${newName}" est déjà dans l'équipe.`; return; }
+  const res = await postJson('/api/members/update', { person, newName, role });
+  if (res.status === 409) { errEl.textContent = `"${newName}" existe déjà.`; return; }
+  if (!res.ok) { errEl.textContent = 'Erreur lors de l\'enregistrement.'; return; }
+  if (newName !== person) {
+    if (DATA[person] !== undefined) { DATA[newName] = DATA[person]; delete DATA[person]; }
+    if (PROVISIONAL[person] !== undefined) { PROVISIONAL[newName] = PROVISIONAL[person]; delete PROVISIONAL[person]; }
+    // keep the person checked in the filter under the new name
+    const chk = document.querySelector(`.person-chk[data-person="${CSS.escape(person)}"]`);
+    if (chk) chk.dataset.person = newName;
+  }
+  const m = MEMBERS.find(m => m.person === person);
+  if (m) { m.person = newName; m.role = role; }
+  editMemberDialog.close();
   flashSave();
   populateSelect();
   update();
 }
+
+document.getElementById('edit-member-save').addEventListener('click', saveEditMember);
+document.getElementById('edit-name').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveEditMember(); } });
+document.getElementById('edit-member-cancel').addEventListener('click', () => editMemberDialog.close());
+document.getElementById('edit-member-delete').addEventListener('click', async () => {
+  const person = editingPerson;
+  if (!confirm(`Supprimer ${person} et toutes ses présences ?`)) return;
+  const res = await postJson('/api/members/delete', { person });
+  if (!res.ok) { document.getElementById('edit-member-error').textContent = 'Erreur lors de la suppression.'; return; }
+  editMemberDialog.close();
+  await loadData();
+  populateSelect();
+  update();
+});
+
+// ── Periods ──
+const periodDialog = document.getElementById('period-mgmt-dialog');
+const periodsBar = document.getElementById('periods-bar');
+let editingPeriodId = null;
+
+function periodDates(p) {
+  return p.start === p.end ? fmtDateFr(p.start) : `${fmtDateFr(p.start)} → ${fmtDateFr(p.end)}`;
+}
+
+// Chips for the periods overlapping the selected range
+function renderPeriodsBar(start, end) {
+  const visible = PERIODS.filter(p => p.end >= start && p.start <= end);
+  periodsBar.innerHTML = visible.map(p => `
+    <button class="period-chip" data-id="${p.id}" style="--period-color:${p.color}" title="${esc(p.description || 'Modifier la période')}">
+      <span class="period-dot"></span><strong>${esc(p.name)}</strong><span class="period-dates">${periodDates(p)}</span>
+      ${p.description ? `<span class="period-desc">${esc(p.description)}</span>` : ''}
+    </button>`).join('');
+  periodsBar.querySelectorAll('.period-chip').forEach(chip =>
+    chip.addEventListener('click', () => openPeriodDialog(Number(chip.dataset.id))));
+}
+
+function renderPeriodList() {
+  const list = document.getElementById('period-list');
+  if (!PERIODS.length) { list.innerHTML = '<p class="data-hint">Aucune période.</p>'; return; }
+  list.innerHTML = PERIODS.map(p => `
+    <div class="role-list-item period-item${p.id === editingPeriodId ? ' editing' : ''}">
+      <span class="period-dot" style="--period-color:${p.color}"></span>
+      <div class="period-item-text">
+        <span class="role-name-text">${esc(p.name)}</span>
+        <span class="period-dates">${periodDates(p)}</span>
+        ${p.description ? `<span class="period-desc">${esc(p.description)}</span>` : ''}
+      </div>
+      <span class="person-edit-btn" data-edit="${p.id}" title="Modifier">✎</span>
+      <span class="role-delete-btn" data-delete="${p.id}" title="Supprimer">×</span>
+    </div>`).join('');
+  list.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => fillPeriodForm(Number(b.dataset.edit))));
+  list.querySelectorAll('[data-delete]').forEach(b => b.addEventListener('click', () => removePeriod(Number(b.dataset.delete))));
+}
+
+// Fills the form with a period (edit) or clears it (new)
+function fillPeriodForm(id = null) {
+  const p = PERIODS.find(p => p.id === id);
+  editingPeriodId = p ? p.id : null;
+  document.getElementById('period-form-title').textContent = p ? `Modifier « ${p.name} »` : 'Nouvelle période';
+  document.getElementById('period-name').value = p?.name || '';
+  document.getElementById('period-start').value = p?.start || '';
+  document.getElementById('period-end').value = p?.end || '';
+  document.getElementById('period-color').value = p?.color || '#e5534b';
+  document.getElementById('period-description').value = p?.description || '';
+  document.getElementById('period-save-btn').textContent = p ? 'Enregistrer' : 'Ajouter';
+  document.getElementById('period-form-cancel').style.display = p ? '' : 'none';
+  const msg = document.getElementById('period-msg');
+  msg.textContent = ''; msg.className = 'data-msg';
+  renderPeriodList();
+}
+
+function openPeriodDialog(id = null) {
+  fillPeriodForm(id);
+  periodDialog.showModal();
+}
+
+async function reloadPeriods() {
+  PERIODS = await (await fetch('/api/periods')).json();
+  renderPeriodList();
+  update();
+}
+
+async function savePeriod() {
+  const msg = document.getElementById('period-msg');
+  msg.className = 'data-msg';
+  const period = {
+    name: document.getElementById('period-name').value.trim(),
+    start: document.getElementById('period-start').value,
+    end: document.getElementById('period-end').value,
+    color: document.getElementById('period-color').value,
+    description: document.getElementById('period-description').value.trim(),
+  };
+  const error = !period.name ? 'Nom requis.'
+    : !period.start || !period.end ? 'Dates de début et de fin requises.'
+    : period.start > period.end ? 'La date de début doit précéder la date de fin.' : '';
+  if (error) { msg.textContent = error; msg.classList.add('error'); return; }
+  const editing = editingPeriodId !== null;
+  const res = await postJson(editing ? '/api/periods/update' : '/api/periods/add', editing ? { id: editingPeriodId, ...period } : period);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { msg.textContent = body.error || 'Erreur lors de l\'enregistrement.'; msg.classList.add('error'); return; }
+  flashSave();
+  await reloadPeriods();
+  fillPeriodForm(null);
+  msg.textContent = editing ? 'Période modifiée.' : 'Période ajoutée.';
+  msg.classList.add('ok');
+}
+
+async function removePeriod(id) {
+  const p = PERIODS.find(p => p.id === id);
+  if (!p || !confirm(`Supprimer la période « ${p.name} » (${periodDates(p)}) ?`)) return;
+  const res = await postJson('/api/periods/delete', { id });
+  if (!res.ok) { alert('Erreur lors de la suppression.'); return; }
+  if (editingPeriodId === id) fillPeriodForm(null);
+  flashSave();
+  await reloadPeriods();
+}
+
+document.getElementById('period-save-btn').addEventListener('click', savePeriod);
+document.getElementById('period-form-cancel').addEventListener('click', () => fillPeriodForm(null));
+document.getElementById('period-mgmt-close').addEventListener('click', () => periodDialog.close());
+// Suggest the start date as the end date
+document.getElementById('period-start').addEventListener('change', e => {
+  const endInput = document.getElementById('period-end');
+  if (!endInput.value || endInput.value < e.target.value) endInput.value = e.target.value;
+});
 
 // ── Role management ──
 function openRoleMgmtDialog() {
@@ -634,8 +820,11 @@ function update() {
   if (!start || !end || start > end) {
     resultsDiv.innerHTML = '<div class="empty-state"><div class="icon">📅</div><p>Sélectionne une période valide pour voir les résultats.</p></div>';
     teamOverview.style.display = 'none';
+    periodsBar.innerHTML = '';
     return;
   }
+
+  renderPeriodsBar(start, end);
 
   const persons = getSelectedPersons();
 

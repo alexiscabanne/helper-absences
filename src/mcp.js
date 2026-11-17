@@ -3,7 +3,10 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import { z } from 'zod';
 import { holidaysOf, getWorkingDays, parisToday, DATE_RE } from './calendar.js';
-import { getData, calendarInfo, getMembers, getRoles, setAttendance, logChange, listChanges } from './db.js';
+import {
+  getData, calendarInfo, getMembers, getRoles, setAttendance, logChange, listChanges,
+  getPeriods, addPeriod, updatePeriod, deletePeriod, normalizePeriod, HttpError,
+} from './db.js';
 
 const INSTRUCTIONS = `Suivi des présences et congés d'une équipe (jours ouvrés français).
 - Les données ne couvrent que les jours ouvrés : ni week-ends ni jours fériés.
@@ -11,7 +14,9 @@ const INSTRUCTIONS = `Suivi des présences et congés d'une équipe (jours ouvr�
 - "provisional" marque une absence pas encore confirmée (jamais sur un jour présent).
 - Taux de présence = jours présents / jours ouvrés, une demi-journée comptant 0,5.
 - Dates au format YYYY-MM-DD. Aujourd'hui (Paris) : utiliser get_calendar pour la plage disponible.
-- Avant de modifier une présence avec set_attendance, vérifier l'état actuel avec get_attendance.`;
+- Avant de modifier une présence avec set_attendance, vérifier l'état actuel avec get_attendance.
+- Les périodes (list_periods) marquent des plages de l'équipe, par exemple « PFA » (période de forte activité) :
+  aucune livraison ni mise en production pendant une PFA. Lire leur description avant de planifier.`;
 
 const STATUS = { 1: 'present', 0.5: 'half', 0: 'absent' };
 const STATUS_VALUE = { present: 1, half: 0.5, absent: 0 };
@@ -57,6 +62,11 @@ function daysIn(personData = {}, start, end) {
   return Object.keys(personData).filter(d => d >= start && d <= end).sort();
 }
 
+// Names of the periods covering a date
+function periodsOn(periods, d) {
+  return periods.filter(p => p.start <= d && d <= p.end).map(p => p.name);
+}
+
 function stats(personData, start, end) {
   let present = 0, absent = 0, half = 0;
   for (const d of daysIn(personData, start, end)) {
@@ -77,7 +87,7 @@ function createServer(env, ctx) {
   );
   const tool = (name, config, handler) => server.registerTool(name, config, async args => {
     try { return text(await handler(args)); }
-    catch (e) { return e instanceof ToolError ? fail(e.message) : fail(`Erreur serveur : ${e.message}`); }
+    catch (e) { return e instanceof ToolError || e instanceof HttpError ? fail(e.message) : fail(`Erreur serveur : ${e.message}`); }
   });
   const readOnly = { readOnlyHint: true, openWorldHint: false };
 
@@ -139,12 +149,12 @@ function createServer(env, ctx) {
 
   tool('team_availability', {
     title: 'Disponibilité de l\'équipe par jour',
-    description: 'Pour chaque jour ouvré d\'une période (93 jours max) : qui est présent, en demi-journée ou absent, et le taux de présence du jour.',
+    description: 'Pour chaque jour ouvré d\'une période (93 jours max) : qui est présent, en demi-journée ou absent, le taux de présence du jour et les périodes (ex. PFA) qui le couvrent.',
     inputSchema: { ...rangeShape, persons: personsFilter, roles: rolesFilter },
     annotations: readOnly,
   }, async ({ start, end, persons, roles }) => {
     checkRange(start, end, 93);
-    const all = await loadAll(db);
+    const [all, periods] = await Promise.all([loadAll(db), getPeriods(db, start, end)]);
     const people = selectMembers(all.members, persons, roles).map(m => m.person);
     const dates = [...new Set(people.flatMap(p => daysIn(all.data[p], start, end)))].sort();
     return dates.map(d => {
@@ -155,6 +165,8 @@ function createServer(env, ctx) {
       });
       const n = day.present.length + day.half.length + day.absent.length;
       day.rate = n ? Math.round((day.present.length + day.half.length / 2) / n * 100) : null;
+      const inPeriods = periodsOn(periods, d);
+      if (inPeriods.length) day.periods = inPeriods;
       return day;
     });
   });
@@ -166,15 +178,18 @@ function createServer(env, ctx) {
       ...rangeShape,
       persons: z.array(z.string()).min(1).describe('Noms exacts des personnes qui doivent être présentes'),
       allow_half: z.boolean().optional().describe('Accepter les demi-journées (false par défaut)'),
+      avoid_periods: z.array(z.string()).optional().describe('Exclure les jours couverts par ces périodes, ex. ["PFA"] pour une mise en production'),
     },
     annotations: readOnly,
-  }, async ({ start, end, persons, allow_half }) => {
+  }, async ({ start, end, persons, allow_half, avoid_periods }) => {
     checkRange(start, end, 400);
-    const all = await loadAll(db);
+    const [all, periods] = await Promise.all([loadAll(db), getPeriods(db, start, end)]);
     selectMembers(all.members, persons);
+    const blocking = periods.filter(p => avoid_periods?.includes(p.name));
     const ok = v => v === 1 || (allow_half && v === 0.5);
-    const dates = getWorkingDays(start, end).filter(d => persons.every(p => ok(all.data[p]?.[d])));
-    return { persons, allow_half: !!allow_half, count: dates.length, dates };
+    const dates = getWorkingDays(start, end)
+      .filter(d => persons.every(p => ok(all.data[p]?.[d])) && !periodsOn(blocking, d).length);
+    return { persons, allow_half: !!allow_half, avoid_periods: avoid_periods || [], count: dates.length, dates };
   });
 
   tool('list_recent_changes', {
@@ -183,6 +198,50 @@ function createServer(env, ctx) {
     inputSchema: { limit: z.number().int().min(1).max(100).optional().describe('20 par défaut') },
     annotations: readOnly,
   }, async ({ limit }) => listChanges(db, limit || 20));
+
+  tool('list_periods', {
+    title: 'Périodes',
+    description: 'Périodes de l\'équipe (ex. PFA : période de forte activité, pas de livraison) qui chevauchent une plage de dates, ou toutes si aucune plage.',
+    inputSchema: {
+      start: date.optional().describe('Début de plage incluse'),
+      end: date.optional().describe('Fin de plage incluse'),
+    },
+    annotations: readOnly,
+  }, async ({ start, end }) => getPeriods(db, start, end));
+
+  const periodShape = {
+    name: z.string().min(1).max(60).describe('Nom court, ex. "PFA"'),
+    start: date.describe('Premier jour inclus'),
+    end: date.describe('Dernier jour inclus'),
+    description: z.string().max(500).optional().describe('Ce que la période implique, ex. "Pas de livraison"'),
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().describe('Couleur d\'affichage, ex. "#e5534b"'),
+  };
+  const writeAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+
+  tool('save_period', {
+    title: 'Créer ou modifier une période',
+    description: 'Crée une période, ou remplace entièrement la période d\'identifiant id (obtenu avec list_periods).',
+    inputSchema: { id: z.number().int().optional().describe('Période à modifier (création si absent)'), ...periodShape },
+    annotations: writeAnnotations,
+  }, async ({ id, ...input }) => {
+    const p = normalizePeriod(input);
+    const period = id === undefined ? await addPeriod(db, p) : await updatePeriod(db, id, p);
+    if (!period) throw new ToolError(`Période ${id} introuvable.`);
+    ctx.waitUntil(logChange(db, 'mcp', 'mcp', id === undefined ? 'period-add' : 'period-update', period));
+    return period;
+  });
+
+  tool('delete_period', {
+    title: 'Supprimer une période',
+    description: 'Supprime la période d\'identifiant id (obtenu avec list_periods).',
+    inputSchema: { id: z.number().int() },
+    annotations: { ...writeAnnotations, idempotentHint: true },
+  }, async ({ id }) => {
+    const period = await deletePeriod(db, id);
+    if (!period) throw new ToolError(`Période ${id} introuvable.`);
+    ctx.waitUntil(logChange(db, 'mcp', 'mcp', 'period-delete', period));
+    return { deleted: period };
+  });
 
   tool('set_attendance', {
     title: 'Modifier des présences',

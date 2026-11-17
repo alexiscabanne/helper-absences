@@ -59,13 +59,12 @@ export async function handleApi(request, env, ctx, actor) {
       return json({ ok: true });
     }
 
-    case 'POST /api/members/rename': {
-      const { oldName, newName } = body;
-      if (!oldName || !newName || !newName.trim()) return json({ error: 'oldName and newName required' }, 400);
+    case 'POST /api/members/update': {
+      const { person, newName, role } = body;
+      if (!person || !newName || !newName.trim()) return json({ error: 'person and newName required' }, 400);
       const name = newName.trim();
-      if (name === oldName) return json({ ok: true });
-      if (!await store.renameMember(db, oldName, name)) return json({ error: 'person not found' }, 404);
-      log('member-rename', { oldName, newName: name });
+      if (!await store.updateMember(db, person, name, role || null)) return json({ error: 'person not found' }, 404);
+      log('member-update', { person, newName: name, role: role || null });
       return json({ ok: true });
     }
 
@@ -119,6 +118,33 @@ export async function handleApi(request, env, ctx, actor) {
       const unassigned = await store.deleteRole(db, name);
       log('role-delete', { name });
       return json({ ok: true, unassigned });
+    }
+
+    case 'GET /api/periods':
+      return json(await store.getPeriods(db));
+
+    case 'POST /api/periods/add': {
+      const period = await store.addPeriod(db, store.normalizePeriod(body));
+      log('period-add', period);
+      return json(period);
+    }
+
+    case 'POST /api/periods/update': {
+      const id = Number(body.id);
+      if (!Number.isInteger(id)) return json({ error: 'id required' }, 400);
+      const period = await store.updatePeriod(db, id, store.normalizePeriod(body));
+      if (!period) return json({ error: 'not found' }, 404);
+      log('period-update', period);
+      return json(period);
+    }
+
+    case 'POST /api/periods/delete': {
+      const id = Number(body.id);
+      if (!Number.isInteger(id)) return json({ error: 'id required' }, 400);
+      const period = await store.deletePeriod(db, id);
+      if (!period) return json({ error: 'not found' }, 404);
+      log('period-delete', period);
+      return json({ ok: true });
     }
 
     case 'POST /api/years/add': {
