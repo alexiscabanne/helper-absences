@@ -106,7 +106,9 @@ Chaque modification (web ou MCP) est enregistrée dans la table `changes`.
 - **Modifier un membre** (nom, rôle, suppression) : ✎ à côté de son nom dans le menu "Personnes" ou sur sa carte (ou double-clic sur le nom)
 - **Gérer les périodes** (ex. PFA, période de forte activité sans livraison) : "🚩 Périodes" dans le menu "Personnes". Les périodes s'affichent au-dessus des cartes et soulignent les jours concernés dans les calendriers.
 - **Gérer les rôles** : "⚙ Rôles" dans le menu déroulant
-- **Basculer une présence** : clic sur un jour (Présent → Absent → Demi-journée), clic droit pour "Provisoire"
+- **Basculer une présence** : clic sur un jour (Présent → Absent ; tout autre état → Présent)
+- **Choisir un état** (demi-journée, absence provisoire…) : clic droit sur un jour
+- **Modifier une plage** : MAJ+clic sur le premier jour, MAJ+clic sur le dernier, puis clic droit pour choisir l'état de tous les jours ouvrés sélectionnés (Échap annule la sélection)
 - **Créer l'année suivante** : "📅 Années & historique" → "Créer l'année" (tout le monde présent sur les jours ouvrés)
 - **Supprimer l'historique** : même fenêtre → date → "Supprimer". Les présences avant cette date passent dans `attendance_archive`.
 

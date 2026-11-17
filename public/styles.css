@@ -283,7 +283,32 @@
   .collapse-arrow { font-size: 11px; color: var(--text-dim); transition: transform 0.2s; display: inline-block; margin-left: 4px; }
   .team-overview.collapsed .collapse-arrow { transform: rotate(-90deg); }
   .team-overview.collapsed #team-overview-body { display: none; }
-  .day-cell.present:hover, .day-cell.absent:hover, .day-cell.provisional:hover { transform: scale(1.25); z-index: 3; }
+  .day-cell.editable { cursor: pointer; }
+  .day-cell.editable:hover { transform: scale(1.25); z-index: 3; }
+  .days-row { user-select: none; }
+  .day-cell.selected { outline: 2px solid var(--text); outline-offset: 1px; z-index: 2; }
+
+  /* Right-click status menu */
+  .day-menu {
+    position: fixed; z-index: 200; min-width: 220px;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5); padding: 6px;
+  }
+  .day-menu[hidden] { display: none; }
+  .day-menu-title { font-size: 11px; color: var(--text-dim); padding: 4px 8px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  .day-menu-item {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    font-family: 'DM Sans', sans-serif; font-size: 13px; color: var(--text);
+    background: none; border: none; border-radius: 6px; padding: 7px 8px; cursor: pointer; text-align: left;
+  }
+  .day-menu-item:hover, .day-menu-item:focus-visible { background: var(--accent-glow); outline: none; }
+  .day-menu-item.current { font-weight: 600; }
+  .day-menu-check { margin-left: auto; color: var(--accent); }
+  .day-menu-swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+  .day-menu-swatch.present { background: var(--present-bg); border: 1px solid var(--present); }
+  .day-menu-swatch.absent { background: var(--absent-bg); border: 1px solid var(--absent); }
+  .day-menu-swatch.half { background: rgba(240, 185, 70, 0.13); border: 1px solid #f0b946; }
+  .day-menu-swatch.provisional { border-style: dashed; }
   .day-cell { transition: transform 0.12s, background 0.15s, color 0.15s; }
   .save-indicator {
     position: fixed;

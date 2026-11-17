@@ -56,22 +56,6 @@ export async function getRoles(db) {
   return (await db.prepare('SELECT name, color FROM roles ORDER BY name').all()).results;
 }
 
-// Présent → Absent → Demi-journée → Présent ; null if the day does not exist
-export async function toggleAttendance(db, person, date) {
-  const row = await db.prepare(`UPDATE attendance
-       SET present = CASE present WHEN 1 THEN 0 WHEN 0 THEN 0.5 ELSE 1 END, provisional = 0
-     WHERE person = ?1 AND date = ?2 RETURNING present`).bind(person, date).first();
-  return row ? row.present : null;
-}
-
-// Provisional only applies to a non-present day ; null if the day does not exist
-export async function toggleProvisional(db, person, date) {
-  const row = await db.prepare(`UPDATE attendance
-       SET provisional = CASE WHEN present = 1 THEN 0 ELSE 1 - provisional END
-     WHERE person = ?1 AND date = ?2 RETURNING provisional`).bind(person, date).first();
-  return row ? !!row.provisional : null;
-}
-
 // New member, present on the given days
 export async function addMember(db, person, role, days) {
   await q(db.batch([

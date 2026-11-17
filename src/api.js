@@ -19,22 +19,19 @@ export async function handleApi(request, env, ctx, actor) {
     case 'GET /api/calendar':
       return json(await store.getCalendar(db));
 
-    case 'POST /api/toggle': {
-      const { person, date } = body;
-      if (!person || !date) return json({ error: 'person and date required' }, 400);
-      const present = await store.toggleAttendance(db, person, date);
-      if (present === null) return json({ error: 'not found' }, 404);
-      log('toggle', { person, date, present });
-      return json({ person, date, present });
-    }
-
-    case 'POST /api/toggle-provisional': {
-      const { person, date } = body;
-      if (!person || !date) return json({ error: 'person and date required' }, 400);
-      const prov = await store.toggleProvisional(db, person, date);
-      if (prov === null) return json({ error: 'not found' }, 404);
-      log('toggle-provisional', { person, date, provisional: prov });
-      return json({ person, date, provisional: prov ? 1 : 0 });
+    // Sets one status on one or many days of a person (click, right-click menu, Shift range)
+    case 'POST /api/attendance/set': {
+      const { person, dates, present, provisional } = body;
+      if (!person) return json({ error: 'person required' }, 400);
+      if (!Array.isArray(dates) || !dates.length || dates.length > 400 || !dates.every(d => DATE_RE.test(d))) {
+        return json({ error: 'dates must be 1 to 400 YYYY-MM-DD dates' }, 400);
+      }
+      if (![0, 0.5, 1].includes(present)) return json({ error: 'present must be 0, 0.5 or 1' }, 400);
+      const result = await store.setAttendance(db, person, dates, present, !!provisional);
+      if (!result.updated.length) return json({ error: 'not found' }, 404);
+      const prov = !!provisional && present < 1;
+      log('set-attendance', { person, present, provisional: prov, dates: result.updated });
+      return json({ person, present, provisional: prov, ...result });
     }
 
     case 'GET /api/members':

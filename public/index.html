@@ -286,38 +286,129 @@ function flashSave() {
   setTimeout(() => saveIndicator.classList.remove('show'), 1400);
 }
 
-// ── Toggle provisional ──
-async function toggleProvisional(event, name, dateKey) {
-  event.preventDefault();
-  if (!DATA[name] || DATA[name][dateKey] === undefined) return;
-  if (DATA[name][dateKey] === 1) return;
-  const res = await fetch('/api/toggle-provisional', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ person: name, date: dateKey })
-  });
-  const { provisional } = await res.json();
+// ── Day statuses ──
+// Click: Présent → Absent, any other state → Présent.
+// Right-click: menu with every state, applied to the day or to the Shift selection.
+// Shift+click: first click anchors, next ones select the range from the anchor (one person at a time).
+const STATES = [
+  { key: 'present', label: 'Présent', present: 1, provisional: false, cls: 'present' },
+  { key: 'absent', label: 'Absent', present: 0, provisional: false, cls: 'absent' },
+  { key: 'half', label: 'Demi-journée', present: 0.5, provisional: false, cls: 'half' },
+  { key: 'absent-prov', label: 'Absent provisoire', present: 0, provisional: true, cls: 'absent provisional' },
+  { key: 'half-prov', label: 'Demi-journée provisoire', present: 0.5, provisional: true, cls: 'half provisional' },
+];
+
+// Current Shift selection: { person, anchor, dates: Set }
+let SELECTION = null;
+
+function isEditable(name, dateKey) {
+  return DATA[name]?.[dateKey] !== undefined && !HOLIDAYS.has(dateKey);
+}
+
+function stateOf(name, dateKey) {
+  const prov = !!PROVISIONAL[name]?.[dateKey];
+  return STATES.find(s => s.present === DATA[name][dateKey] && s.provisional === prov) || STATES[0];
+}
+
+async function setDays(name, dates, present, provisional) {
+  const res = await postJson('/api/attendance/set', { person: name, dates, present, provisional });
+  if (!res.ok) { alert('Erreur lors de l\'enregistrement.'); return; }
+  const result = await res.json();
   if (!PROVISIONAL[name]) PROVISIONAL[name] = {};
-  if (provisional) PROVISIONAL[name][dateKey] = 1;
-  else delete PROVISIONAL[name][dateKey];
+  result.updated.forEach(d => {
+    DATA[name][d] = result.present;
+    if (result.provisional) PROVISIONAL[name][d] = 1;
+    else delete PROVISIONAL[name][d];
+  });
   flashSave();
   update();
 }
 
-// ── Toggle a day ──
-async function toggleDay(name, dateKey) {
-  if (!DATA[name] || DATA[name][dateKey] === undefined) return;
-  const res = await fetch('/api/toggle', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ person: name, date: dateKey })
-  });
-  const { present } = await res.json();
-  DATA[name][dateKey] = present;
-  if (PROVISIONAL[name]) delete PROVISIONAL[name][dateKey];
-  flashSave();
+function clearSelection() {
+  if (!SELECTION) return;
+  SELECTION = null;
   update();
 }
+
+function onDayClick(name, dateKey, shift) {
+  closeDayMenu();
+  if (shift) { extendSelection(name, dateKey); return; }
+  SELECTION = null;
+  setDays(name, [dateKey], DATA[name][dateKey] === 1 ? 0 : 1, false);
+}
+
+// Working days of `name` between the anchor and dateKey (weekends and holidays have no data)
+function extendSelection(name, dateKey) {
+  if (!SELECTION || SELECTION.person !== name) {
+    SELECTION = { person: name, anchor: dateKey, dates: new Set([dateKey]) };
+  } else {
+    const [from, to] = [SELECTION.anchor, dateKey].sort();
+    SELECTION.dates = new Set(Object.keys(DATA[name]).filter(d => d >= from && d <= to && isEditable(name, d)));
+  }
+  update();
+}
+
+// ── Right-click menu ──
+const dayMenu = document.createElement('div');
+dayMenu.className = 'day-menu';
+dayMenu.hidden = true;
+document.body.appendChild(dayMenu);
+
+function closeDayMenu() { dayMenu.hidden = true; }
+
+function openDayMenu(event, name, dateKey) {
+  event.preventDefault();
+  const inSelection = SELECTION?.person === name && SELECTION.dates.has(dateKey);
+  if (!inSelection && SELECTION) { SELECTION = null; update(); }
+  const dates = inSelection ? [...SELECTION.dates].sort() : [dateKey];
+  const current = dates.length === 1 ? stateOf(name, dates[0]).key : null;
+  const title = dates.length === 1
+    ? `${esc(name)} · ${DAYS_FR[new Date(dateKey + 'T12:00:00Z').getUTCDay()]} ${fmtDateFr(dateKey)}`
+    : `${esc(name)} · ${dates.length} jours (${fmtDateFr(dates[0])} → ${fmtDateFr(dates[dates.length - 1])})`;
+  dayMenu.innerHTML = `<div class="day-menu-title">${title}</div>` + STATES.map(s => `
+    <button class="day-menu-item${s.key === current ? ' current' : ''}" data-state="${s.key}">
+      <span class="day-menu-swatch ${s.cls}"></span>${s.label}${s.key === current ? '<span class="day-menu-check">✓</span>' : ''}
+    </button>`).join('');
+  dayMenu.querySelectorAll('[data-state]').forEach(btn => btn.addEventListener('click', async () => {
+    const s = STATES.find(s => s.key === btn.dataset.state);
+    closeDayMenu();
+    SELECTION = null;
+    await setDays(name, dates, s.present, s.provisional);
+  }));
+  dayMenu.hidden = false;
+  // keep the menu inside the viewport
+  const { innerWidth: w, innerHeight: h } = window;
+  const r = dayMenu.getBoundingClientRect();
+  dayMenu.style.left = `${Math.min(event.clientX, w - r.width - 8)}px`;
+  dayMenu.style.top = `${Math.min(event.clientY, h - r.height - 8)}px`;
+}
+
+document.addEventListener('mousedown', e => { if (!dayMenu.contains(e.target)) closeDayMenu(); });
+window.addEventListener('scroll', closeDayMenu, { passive: true });
+window.addEventListener('resize', closeDayMenu);
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!dayMenu.hidden) closeDayMenu();
+  else clearSelection();
+});
+
+// Day cells carry data-date; the card carries data-person
+function dayTarget(e) {
+  const cell = e.target.closest('.day-cell[data-date]');
+  if (!cell) return null;
+  const name = cell.closest('.card')?.dataset.person;
+  return name && isEditable(name, cell.dataset.date) ? { name, date: cell.dataset.date } : null;
+}
+resultsDiv.addEventListener('click', e => {
+  const t = dayTarget(e);
+  if (t) onDayClick(t.name, t.date, e.shiftKey);
+});
+resultsDiv.addEventListener('contextmenu', e => {
+  const t = dayTarget(e);
+  if (t) openDayMenu(e, t.name, t.date);
+});
+// Shift+click must not select text
+resultsDiv.addEventListener('mousedown', e => { if (e.shiftKey && dayTarget(e)) e.preventDefault(); });
 
 // ── Multi-select helpers ──
 function updateSelectDisplay() {
@@ -503,10 +594,13 @@ function renderCard(name, stats, role) {
       const periodStyle = inPeriods.length ? `style="--period-color:${inPeriods[0].color}"` : '';
       if (inPeriods.length) cls += ' in-period';
       const periodText = inPeriods.length ? ` · ${inPeriods.map(p => esc(p.name)).join(', ')}` : '';
-      const clickAttr = isClickable && !holidayName ? `onclick="toggleDay('${name}','${d.date}')" oncontextmenu="toggleProvisional(event,'${name}','${d.date}')"` : '';
+      const editable = isClickable && !holidayName;
+      if (editable) cls += ' editable';
+      if (editable && SELECTION?.person === name && SELECTION.dates.has(d.date)) cls += ' selected';
+      const clickAttr = editable ? `data-date="${d.date}"` : '';
       const baseStatus = d.isWeekend ? 'Weekend' : holidayName ? holidayName : d.val === 1 ? 'Présent' : d.val === 0.5 ? 'Demi-journée' : d.val === 0 ? 'Absent' : '—';
       const statusText = isProv ? `${baseStatus} (Provisoire)` : baseStatus;
-      const clickHint = isClickable && !holidayName ? ' · Cliquer pour changer' : '';
+      const clickHint = editable ? ' · Clic : présent/absent · Clic droit : autres états' : '';
       const label = isProv ? 'P' : dayNum;
       calendarHTML += `<div class="${cls}" ${periodStyle} ${clickAttr}><span class="tooltip">${dayName} ${dayNum} – ${statusText}${periodText}${clickHint}</span>${label}</div>`;
     });
@@ -537,7 +631,7 @@ function renderCard(name, stats, role) {
       </div>
       <div class="bar-container"><div class="bar-fill ${level}" style="width:${stats.pct}%"></div></div>
       <div class="calendar-section">
-        <h3>Détail jour par jour · <span style="font-weight:400;color:var(--text-dim);font-size:12px">clic : Présent → Absent → Demi-journée · clic droit : Provisoire</span></h3>
+        <h3>Détail jour par jour · <span style="font-weight:400;color:var(--text-dim);font-size:12px">clic : Présent ↔ Absent · clic droit : tous les états · MAJ+clic : sélectionner une plage</span></h3>
         ${calendarHTML}
       </div>
     </div>

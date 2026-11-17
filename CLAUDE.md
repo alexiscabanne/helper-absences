@@ -20,7 +20,7 @@ French leave/attendance tracking web app (multi-year) with an MCP server so agen
 
 **Data access** (`src/db.js`): every query lives here and is shared by the API and MCP. Lists of dates are passed as one JSON parameter and expanded with `json_each()`, so bulk operations stay a single statement (D1 free plan caps queries per invocation). Multi-statement operations use `db.batch()` (transactional): `addYear`, `purgeBefore`, `addMember`, `deleteRole`. `UNIQUE constraint failed` maps to `HttpError(409)`.
 
-**API** (`src/api.js`): same routes/contract as the former Express server: `GET /api/data|members|roles|calendar|periods`, `POST /api/toggle`, `/api/toggle-provisional`, `/api/members/{add,role,update,reorder,delete}` (`update` = name + role in one statement), `/api/roles/{add,rename,update,delete}`, `/api/periods/{add,update,delete}`, `/api/years/add`, `/api/purge`. Mutations are logged to `changes` (source `web`, actor = Access email).
+**API** (`src/api.js`): same routes/contract as the former Express server: `GET /api/data|members|roles|calendar|periods`, `POST /api/attendance/set` (`{person, dates, present, provisional}`, used for clicks, the right-click menu and Shift ranges), `/api/members/{add,role,update,reorder,delete}` (`update` = name + role in one statement), `/api/roles/{add,rename,update,delete}`, `/api/periods/{add,update,delete}`, `/api/years/add`, `/api/purge`. Mutations are logged to `changes` (source `web`, actor = Access email).
 
 **MCP** (`src/mcp.js`): tools `get_calendar`, `list_members`, `list_holidays`, `get_attendance`, `get_stats`, `team_availability`, `find_common_availability`, `list_recent_changes`, `list_periods` (read-only) and `set_attendance`, `save_period`, `delete_period` (write, logged with source `mcp`). `team_availability` adds `periods` per day; `find_common_availability` takes `avoid_periods`. Period validation (`normalizePeriod` in `db.js`) is shared by API and MCP. A new server+transport is created per request. Uses `CfWorkerJsonSchemaValidator` (Ajv does not run in Workers).
 
@@ -28,7 +28,7 @@ French leave/attendance tracking web app (multi-year) with an MCP server so agen
 
 **Calendar** (`src/calendar.js`): French holidays computed from Easter (`holidaysOf`), `getWorkingDays(start, end)`, `parisToday()`. Holidays exist only here; the frontend gets them from `/api/calendar`.
 
-**Frontend** (`public/index.html`): `loadData()` fetches data, members, roles and calendar; `selectYear` / `setRange` drive the year selector and quick buttons; "📅 Années & historique" dialog creates a year or purges history. "🚩 Périodes" dialog manages periods (chips above the cards, underline on calendar days). Person edit dialog (`openEditMember`) handles name, role and deletion. Month grouping is keyed by `YYYY-MM`.
+**Frontend** (`public/index.html`): `loadData()` fetches data, members, roles and calendar; `selectYear` / `setRange` drive the year selector and quick buttons; "📅 Années & historique" dialog creates a year or purges history. "🚩 Périodes" dialog manages periods (chips above the cards, underline on calendar days). Person edit dialog (`openEditMember`) handles name, role and deletion. Day cells: click toggles Présent ↔ Absent (any other state → Présent); right-click opens `dayMenu` with every state (`STATES`); Shift+click builds `SELECTION` (one person, from the anchor) that the menu applies in one `/api/attendance/set` call. Handlers are delegated on `#results` via `data-date` (card has `data-person`). Month grouping is keyed by `YYYY-MM`.
 
 ## Configuration
 
