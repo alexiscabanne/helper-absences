@@ -207,13 +207,7 @@
   .bar-fill.low { background: var(--absent); }
 
   .calendar-section {
-    margin-top: 8px;
-  }
-  .calendar-section h3 {
-    font-size: 14px;
-    font-weight: 600;
-    margin-bottom: 12px;
-    color: var(--text-dim);
+    margin-top: 16px;
   }
 
   .month-grid {
