@@ -1,12 +1,22 @@
 {
   "name": "suivi-conges",
   "version": "1.0.0",
-  "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "dev": "wrangler dev",
+    "dev:mcp": "wrangler dev -c wrangler.mcp.jsonc --port 8788",
+    "deploy": "wrangler deploy && wrangler deploy -c wrangler.mcp.jsonc",
+    "db:migrate:local": "wrangler d1 migrations apply helper-absences --local",
+    "db:migrate:remote": "wrangler d1 migrations apply helper-absences --remote"
   },
   "dependencies": {
-    "sql.js": "^1.12.0",
-    "express": "^4.18.3"
-  }
+    "@cfworker/json-schema": "^4.1.6",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "jose": "^6.2.17",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "sql.js": "^1.16.0",
+    "wrangler": "^4.164.0"
+  },
+  "private": true
 }

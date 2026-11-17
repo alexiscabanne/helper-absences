@@ -1,0 +1,24 @@
+// Worker « mcp » : serveur MCP seul (/mcp), hors Cloudflare Access, protégé par le secret MCP_TOKEN.
+// Même code et même base D1 que wrangler.jsonc.
+// Déploiement : npx wrangler deploy -c wrangler.mcp.jsonc
+// Secret       : npx wrangler secret put MCP_TOKEN -c wrangler.mcp.jsonc
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "helper-absences-mcp",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "helper-absences",
+      "database_id": "f7771967-5c89-4ea1-8c02-75b00c14fbef",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "WORKER_ROLE": "mcp"
+  }
+}

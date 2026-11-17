@@ -93,7 +93,7 @@
 
     <div class="data-section danger">
       <h4>Supprimer l'historique</h4>
-      <p class="data-hint">Supprime toutes les présences <strong>avant</strong> la date choisie (la date elle-même est conservée). Une sauvegarde de la base est faite avant.</p>
+      <p class="data-hint">Supprime toutes les présences <strong>avant</strong> la date choisie (la date elle-même est conservée). Les lignes supprimées sont conservées dans une table d'archive.</p>
       <div class="data-row">
         <input type="date" id="purge-date">
         <button class="dialog-btn danger" id="purge-btn">Supprimer</button>
@@ -878,7 +878,7 @@ document.getElementById('purge-btn').addEventListener('click', async () => {
   selectYear(CALENDAR.years.includes(prevYear) ? prevYear : defaultYear());
   update();
   flashSave();
-  msg.textContent = `${body.deleted} ligne(s) supprimée(s). Sauvegarde : backups/${body.backup}`;
+  msg.textContent = `${body.deleted} ligne(s) supprimée(s) et archivée(s).`;
   msg.classList.add('ok');
   refreshDataRangeInfo();
 });

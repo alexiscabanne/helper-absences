@@ -2,58 +2,43 @@
 
 ## Project Overview
 
-French leave/attendance tracking web app, multi-year. Tracks presence/absence for team members across working days.
+French leave/attendance tracking web app (multi-year) with an MCP server so agents can read and update attendance for planning. Runs entirely on Cloudflare (Worker + D1).
 
 ## Stack
 
-- **Frontend**: `index.html` + `styles.css` (no build step, no framework)
-- **Backend**: `server.js` — Express + sql.js serving a local SQLite database (`conges.db`)
-- **Start**: `node server.js` then open `http://localhost:3100`
-
-## File Structure
-
-```
-index.html   — UI (HTML + JS only, CSS extracted to styles.css)
-styles.css   — All CSS styles
-server.js    — Express backend with SQLite persistence
-conges.db    — SQLite database (auto-created on first run)
-```
+- **Frontend**: `public/index.html` + `public/styles.css` (no build step, no framework), served as Worker static assets
+- **Backend**: Cloudflare Worker (`src/`, plain JS ES modules, bundled by wrangler) + D1 (binding `DB`)
+- **MCP**: `@modelcontextprotocol/sdk`, stateless Streamable HTTP on `/mcp`
+- **Dev**: `npm run dev` (app, port 8787) and `npm run dev:mcp` (MCP, port 8788); both share the local D1 in `.wrangler/state` (keyed by `database_id`)
+- **Deploy**: `npm run deploy` (both Workers); schema with `npm run db:migrate:local|remote`
 
 ## Architecture
 
-**Backend** (`server.js`):
-- `INITIAL_DATA`: inline JSON for seeding a blank DB and `/api/reset` — **currently commented out**, so `/api/reset` will throw a ReferenceError if called
-- `seedDb()`: creates `attendance` (person, date, present), `members` (person, role, sort_order), and `roles` (name, color) tables
-- `saveDb()`: writes the in-memory sql.js DB to `conges.db` after every mutation; `backupDb(label)` writes a snapshot to `backups/` (gitignored)
-- `holidaysOf(year)`: French public holidays computed from Easter (`easterSunday`); `getWorkingDays(start, end)` excludes weekends and holidays
-- `GET /api/calendar`: `{ min, max, years, holidays }` derived from `attendance` — the single source for the date range and holidays
-- `POST /api/years/add {year}`: inserts every working day of the year (present=1) for all members; 409 if the year already has data
-- `POST /api/purge {before}`: backs up, then deletes attendance with `date < before`; rejects future dates
-- API endpoints: `GET /api/data`, `GET /api/members`, `GET /api/roles`, `GET /api/calendar`, `POST /api/toggle`, `POST /api/years/add`, `POST /api/purge`, `POST /api/reset`, `POST /api/members/add`, `POST /api/members/role`, `POST /api/members/rename`, `POST /api/members/reorder`, `POST /api/members/delete`, `POST /api/roles/add`, `POST /api/roles/rename`, `POST /api/roles/update`, `POST /api/roles/delete`
+**Workers** (`src/worker.js`, one code base, `WORKER_ROLE` var):
+- `helper-absences` (`wrangler.jsonc`, role `app`): static assets + `/api/*` → Cloudflare Access JWT (`verifyAccess`, returns the user email) → `handleApi`.
+- `helper-absences-mcp` (`wrangler.mcp.jsonc`, role `mcp`): only `/mcp` → bearer token (`verifyMcpToken`) → `handleMcp`. Separate Worker because Access on `*.workers.dev` cannot exclude a path.
 
-**Frontend** (`index.html`):
-- `loadData()`: fetches `/api/data`, `/api/members`, `/api/roles` and `/api/calendar`; populates `DATA`, `MEMBERS`, `ROLES_DATA`, `ROLES`, `CALENDAR`, `HOLIDAYS`
-- `selectYear(y)` / `setRange(start, end)`: year selector and quick buttons, clamped to the data range
-- "📅 Années & historique" dialog (`openDataMgmtDialog`): create a year, purge history before a date
-- `toggleDay(name, dateKey)`: POSTs to `/api/toggle`, updates `DATA`, re-renders
-- `update()`: recomputes stats from `DATA` filtered by person/date range, renders cards and team table
-- `calcStats(personData, start, end)`: counts present/absent/half days, skips weekends and holidays
-- `renderCard(name, stats, role)`: builds per-person card with month-by-month day grid; role badge uses dynamic color from `ROLES_DATA`
+**Data access** (`src/db.js`): every query lives here and is shared by the API and MCP. Lists of dates are passed as one JSON parameter and expanded with `json_each()`, so bulk operations stay a single statement (D1 free plan caps queries per invocation). Multi-statement operations use `db.batch()` (transactional): `addYear`, `purgeBefore`, `addMember`, `deleteRole`. `UNIQUE constraint failed` maps to `HttpError(409)`.
 
-**Date range:** derived from the data (`MIN/MAX(date)` in `attendance`), nothing is hard-coded.
+**API** (`src/api.js`): same routes/contract as the former Express server: `GET /api/data|members|roles|calendar`, `POST /api/toggle`, `/api/toggle-provisional`, `/api/members/{add,role,rename,reorder,delete}`, `/api/roles/{add,rename,update,delete}`, `/api/years/add`, `/api/purge`. Mutations are logged to `changes` (source `web`, actor = Access email).
+
+**MCP** (`src/mcp.js`): tools `get_calendar`, `list_members`, `list_holidays`, `get_attendance`, `get_stats`, `team_availability`, `find_common_availability`, `list_recent_changes` (read-only) and `set_attendance` (write, logged with source `mcp`). A new server+transport is created per request. Uses `CfWorkerJsonSchemaValidator` (Ajv does not run in Workers).
+
+**Schema** (`migrations/0001_init.sql`): `roles`, `members`, `attendance` (present ∈ {0, 0.5, 1}, `provisional` 0/1), `attendance_archive`, `changes` (details stored as JSON text). Renames/deletes rely on FKs (D1 enforces them): `attendance.person` ON UPDATE/DELETE CASCADE, `members.role` ON UPDATE CASCADE / ON DELETE SET NULL.
+
+**Calendar** (`src/calendar.js`): French holidays computed from Easter (`holidaysOf`), `getWorkingDays(start, end)`, `parisToday()`. Holidays exist only here; the frontend gets them from `/api/calendar`.
+
+**Frontend** (`public/index.html`): `loadData()` fetches data, members, roles and calendar; `selectYear` / `setRange` drive the year selector and quick buttons; "📅 Années & historique" dialog creates a year or purges history. Month grouping is keyed by `YYYY-MM`.
+
+## Configuration
+
+- `wrangler.jsonc`: D1 binding (`database_id`), vars `WORKER_ROLE=app`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` (API returns 503 while empty).
+- `wrangler.mcp.jsonc`: same D1 binding, `WORKER_ROLE=mcp`; secret `MCP_TOKEN` (set with `-c wrangler.mcp.jsonc`).
+- Keep the D1 binding identical in both configs.
+- `.dev.vars` (gitignored) for local dev; `DEV_SKIP_ACCESS=1` only works on localhost.
 
 ## Gotchas
 
-- **French public holidays** are computed only in `server.js` (`holidaysOf`) and sent to the frontend via `/api/calendar`.
-- **Month grouping** in cards is keyed by `YYYY-MM` so ranges spanning two years don't merge months.
-- **`INITIAL_DATA` is commented out** in `server.js` — calling `/api/reset` via the UI will crash the server. To reset, delete `conges.db` and restart.
-- **Roles are dynamic** — stored in the `roles` table, not hardcoded. `ROLES_DATA` / `ROLES` are populated at startup from `/api/roles`.
-
-## Common Modifications
-
-- **Add/remove a team member:** Use the "+ Personne" entry in the person dropdown, or POST to `/api/members/add`.
-- **Rename a team member:** Double-click their name on their card.
-- **Manage roles (add/rename/delete/recolor):** "⚙ Rôles" item in the person dropdown.
-- **Reset live data to baseline:** Delete `conges.db` and restart the server (`INITIAL_DATA` is commented out so the UI reset button is broken).
-- **Add a year / drop old data:** "📅 Années & historique" in the person dropdown (`/api/years/add`, `/api/purge`).
-- **Default port:** `3100` (override with `process.env.PORT`).
+- `scripts/sqlite-to-d1.mjs` converts the legacy `conges.db` to an SQL import file (one-time; fails on duplicate keys if rerun).
+- Stopping `wrangler dev` from a background shell can leave `workerd.exe` running and locking `.wrangler/state` on Windows.
+- Adding a holiday rule: change `holidaysOf` only.

@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "helper-absences",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "./public" },
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "helper-absences",
+      "database_id": "f7771967-5c89-4ea1-8c02-75b00c14fbef",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    // Worker « app » : interface + /api/*, derrière Cloudflare Access (le MCP est dans wrangler.mcp.jsonc)
+    "WORKER_ROLE": "app",
+    // Cloudflare Access : https://<équipe>.cloudflareaccess.com et l'« Application Audience (AUD) Tag »
+    "ACCESS_TEAM_DOMAIN": "https://crimson-bush-66e2.cloudflareaccess.com",
+    "ACCESS_AUD": "38d209306681fd4fa8dd5c293c7095817ad2893d7b051e633fd7ddc1c741c386"
+  }
+}
